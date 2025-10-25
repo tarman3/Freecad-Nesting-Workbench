@@ -4,7 +4,7 @@
 This module contains the Shape class, a simple data wrapper for managing
 FreeCAD objects during the nesting process.
 """
-
+import Part
 import copy
 import FreeCAD
 try:
@@ -83,6 +83,42 @@ class Shape:
             return None
         
         return translate(self.__shape_bounds.polygon, xoff=sheet_origin_vector.x, yoff=sheet_origin_vector.y)
+
+    def draw_bounds(self, doc, sheet_origin, group):
+        """
+        Draws the exterior and interior boundaries of the shape's final polygon in FreeCAD.
+
+        Args:
+            doc (FreeCAD.Document): The active document.
+            sheet_origin (FreeCAD.Vector): The origin of the sheet this part is on.
+            group (App.DocumentObjectGroup): The group to add the new objects to.
+        """
+        final_polygon = self.get_final_bounds_polygon(sheet_origin)
+        if not final_polygon:
+            return
+
+        name_prefix = f"bound_{self.id}"
+
+        # Draw exterior
+        exterior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in final_polygon.exterior.coords]
+        if len(exterior_verts) > 2:
+            bound_wire = Part.makePolygon(exterior_verts)
+            bound_obj = doc.addObject("Part::Feature", f"{name_prefix}_ext")
+            bound_obj.Shape = bound_wire
+            group.addObject(bound_obj)
+            if FreeCAD.GuiUp:
+                bound_obj.ViewObject.LineColor = (1.0, 0.0, 0.0) # Red for bounds
+
+        # Draw interiors (holes)
+        for i, interior in enumerate(final_polygon.interiors):
+            interior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in interior.coords]
+            if len(interior_verts) > 2:
+                hole_wire = Part.makePolygon(interior_verts)
+                hole_obj = doc.addObject("Part::Feature", f"{name_prefix}_int_{i}")
+                hole_obj.Shape = hole_wire
+                group.addObject(hole_obj)
+                if FreeCAD.GuiUp:
+                    hole_obj.ViewObject.LineColor = (1.0, 0.0, 0.0) # Red for bounds
 
     def get_final_placement(self, sheet_origin, nested_centroid, angle_deg):
         """

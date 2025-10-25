@@ -196,9 +196,7 @@ class Sheet:
                 objects_group.addObject(new_obj)
 
             if draw_shape_bounds and shape.show_bounds and shape.shape_bounds.polygon:
-                from ..Tools.Nesting.drawing_utils import draw_polygon_boundary
-                final_bounds_polygon = shape.get_final_bounds_polygon(sheet_origin)
-                draw_polygon_boundary(doc, final_bounds_polygon, f"bound_{shape.id}", objects_group)
+                shape.draw_bounds(doc, sheet_origin, objects_group)
 
             if ui_params.get('add_labels', False) and Draft and ui_params.get('font_path') and hasattr(shape, 'label_text') and shape.label_text:
                 # Create the Draft.ShapeString object here, just before drawing.

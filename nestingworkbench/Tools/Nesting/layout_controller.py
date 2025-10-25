@@ -10,7 +10,6 @@ import Part
 import copy
 import math
 from .spreadsheet_utils import create_layout_spreadsheet
-from .drawing_utils import draw_polygon_boundary
 
 try:
     from shapely.affinity import translate

@@ -20,7 +20,6 @@ from .nesting_logic import nest, NestingDependencyError
 # Import other necessary modules from the workbench
 from .layout_controller import LayoutController # This is a placeholder, will be replaced by the correct import
 from .algorithms import shape_processor
-from .drawing_utils import draw_polygon_boundary
 from ...datatypes.shape import Shape
 
 try:
@@ -262,8 +261,7 @@ class NestingController:
                     # Only draw if the bound object doesn't already exist.
                     if not self.doc.getObject(bound_obj_name):
                         if shape.shape_bounds and shape.shape_bounds.polygon:
-                            final_bounds_polygon = shape.get_final_bounds_polygon(sheet_origin)
-                            draw_polygon_boundary(self.doc, final_bounds_polygon, f"bound_{shape.id}", objects_group)
+                            shape.draw_bounds(self.doc, sheet_origin, objects_group)
             self.ui.status_label.setText("Boundary objects are now visible.")
         else:
             # Find and delete all existing boundary objects.
