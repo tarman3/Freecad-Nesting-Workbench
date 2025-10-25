@@ -67,7 +67,7 @@ def get_2d_profile_from_obj(obj):
     raise ValueError(f"Unsupported object '{obj.Label}' or no valid 2D geometry found.")
 
 
-def create_single_nesting_part(shape_obj, spacing, resolution=75, part_grid_resolution=10):
+def create_single_nesting_part(shape_obj, spacing, resolution=75):
     """
     Creates one ShapeBounds boundary from a single FreeCAD object using Shapely.
     The created boundary is normalized to be centered at the origin (0,0),
@@ -168,53 +168,4 @@ def create_single_nesting_part(shape_obj, spacing, resolution=75, part_grid_reso
     shape_bounds.unbuffered_polygon = final_unbuffered_polygon
     shape_bounds.source_centroid = source_centroid + offset_from_origin
     
-    # Populate the grid representation of the shape
-    populate_shape_bounds_grid(shape_bounds, part_grid_resolution)
-
     return shape_bounds
-
-def populate_shape_bounds_grid(shape_bounds, grid_resolution):
-    """
-    Populates a 2D grid representing the shape's occupancy.
-
-    Args:
-        shape_bounds (ShapeBounds): The shape bounds object to populate.
-        grid_resolution (float): The distance between grid points.
-    """
-    from shapely.geometry import Point
-    from shapely.affinity import translate
-
-    polygon = shape_bounds.unbuffered_polygon
-    if not polygon or polygon.is_empty or grid_resolution <= 0:
-        shape_bounds.shape_bounds_grid = []
-        return
-
-    # The unbuffered_polygon may have a slight offset from the origin due to the
-    # re-centering of the buffered polygon. To ensure the grid is generated from a
-    # perfectly origin-centered shape, we translate it by its own centroid.
-    polygon = translate(polygon, xoff=-polygon.centroid.x, yoff=-polygon.centroid.y)
-
-    min_x, min_y, max_x, max_y = polygon.bounds
-
-    # Calculate grid dimensions
-    cols = int(math.ceil((max_x - min_x) / grid_resolution)) + 1
-    rows = int(math.ceil((max_y - min_y) / grid_resolution)) + 1
-
-    grid = [[VertState.EMPTY for _ in range(cols)] for _ in range(rows)]
-
-    # A small tolerance for boundary checks
-    tolerance = 1e-6
-
-    for r in range(rows):
-        for c in range(cols):
-            # Calculate the real-world coordinate of the grid point
-            px = min_x + c * grid_resolution
-            py = min_y + r * grid_resolution
-            point = Point(px, py)
-
-            if polygon.contains(point):
-                grid[r][c] = VertState.FILLED
-            elif polygon.boundary.distance(point) < tolerance:
-                grid[r][c] = VertState.EDGE
-
-    shape_bounds.shape_bounds_grid = grid

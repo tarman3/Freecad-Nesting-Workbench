@@ -29,8 +29,6 @@ class Sheet:
         self.id = sheet_id
         self.width = width
         self.height = height
-        self.grid_resolution = 0
-        self.grid = None # Will be a 2D list of VertState
         self.parts = [] # List of PlacedPart objects
         self._union_of_placed_parts = None
         self._union_is_dirty = True
@@ -51,22 +49,6 @@ class Sheet:
         """Adds a part to the sheet and marks the union cache as dirty."""
         self.parts.append(placed_part)
         self._union_is_dirty = True
-
-    def initialize_grid(self, grid_resolution):
-        """
-        Creates a grid of points for the sheet, with each point marked as empty.
-        """
-        from ..datatypes.vert_state import VertState
-        if grid_resolution <= 0:
-            self.grid = None
-            self.grid_resolution = 0
-            return
-
-        self.grid_resolution = grid_resolution
-        cols = int(self.width // self.grid_resolution)
-        rows = int(self.height // self.grid_resolution)
-        # The grid stores VertState enums
-        self.grid = [[VertState.EMPTY for _ in range(cols)] for _ in range(rows)]
 
     def get_origin(self, spacing=0):
         """

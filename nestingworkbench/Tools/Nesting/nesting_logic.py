@@ -2,7 +2,6 @@ import FreeCAD
 from PySide import QtGui
 
 from .algorithms import (
-    grid_fill_nester,
     genetic_nester,
     gravity_nester,
     base_nester,
@@ -28,12 +27,11 @@ def nest(parts, width, height, rotation_steps=1, algorithm='Grid Fill', update_c
     unplaced = []
 
     nester_class = {
-        'Grid Fill': grid_fill_nester.GridFillNester,
         'Genetic': genetic_nester.GeneticNester, # Not implemented
         'Gravity': gravity_nester.GravityNester,
         'Minkowski': minkowski_nester.MinkowskiNester,
         'SAT': sat_nester.SatNester
-    }.get(algorithm, grid_fill_nester.GridFillNester)
+    }.get(algorithm)
 
     if algorithm in ['Genetic', 'Gravity', 'Minkowski', 'SAT'] and not SHAPELY_AVAILABLE:
         show_shapely_installation_instructions()

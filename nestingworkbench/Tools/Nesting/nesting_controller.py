@@ -18,7 +18,7 @@ from PySide import QtGui
 from .nesting_logic import nest, NestingDependencyError
 
 # Import other necessary modules from the workbench
-from .layout_controller import LayoutController
+from .layout_controller import LayoutController # This is a placeholder, will be replaced by the correct import
 from .algorithms import shape_processor
 from .drawing_utils import draw_polygon_boundary
 from ...datatypes.shape import Shape
@@ -132,25 +132,22 @@ class NestingController:
                 algo_kwargs['gravity_direction'] = (math.cos(angle_rad), math.sin(angle_rad))
 
             algo_kwargs['step_size'] = self.ui.gravity_step_size_input.value() # Maps to BaseNester's step_size
-            algo_kwargs['anneal_rotate_enabled'] = self.ui.anneal_rotate_checkbox.isChecked()
-            algo_kwargs['anneal_translate_enabled'] = self.ui.anneal_translate_checkbox.isChecked()
-            algo_kwargs['anneal_random_shake_direction'] = self.ui.anneal_random_shake_checkbox.isChecked()
+            algo_kwargs['anneal_rotate_enabled'] = self.ui.anneal_rotate_checkbox.isChecked() # This widget is in NestingPanel
+            algo_kwargs['anneal_translate_enabled'] = self.ui.anneal_translate_checkbox.isChecked() # This widget is in NestingPanel
+            algo_kwargs['anneal_random_shake_direction'] = self.ui.anneal_random_shake_checkbox.isChecked() # This widget is in NestingPanel
             algo_kwargs['max_spawn_count'] = self.ui.gravity_max_spawn_input.value()
-            algo_kwargs['anneal_steps'] = self.ui.gravity_anneal_steps_input.value()
-            algo_kwargs['max_nesting_steps'] = self.ui.gravity_max_nesting_steps_input.value()
+            algo_kwargs['anneal_steps'] = self.ui.gravity_anneal_steps_input.value() # This widget is in NestingPanel
+            algo_kwargs['max_nesting_steps'] = self.ui.gravity_max_nesting_steps_input.value() # This widget is in NestingPanel
 
         if algorithm == 'Genetic':
             algo_kwargs['population_size'] = self.ui.genetic_population_size_input.value()
             algo_kwargs['generations'] = self.ui.genetic_generations_input.value()
             # Could add mutation rate to UI later if needed
 
-        if algorithm == 'Grid Fill':
-            algo_kwargs['gridresolution'] = self.ui.part_grid_resolution_spinbox.value()
-
         self.preview_sheet_layouts.clear() # Reset preview state for new run
 
         # --- Prepare UI parameters for controllers ---
-        global_rotation_steps = self.ui.rotation_steps_spinbox.value()
+        global_rotation_steps = self.ui.rotation_steps_spinbox.value() # This widget is in NestingPanel
         self.last_run_ui_params = {
             'sheet_w': sheet_w,
             'sheet_h': sheet_h,
@@ -158,11 +155,9 @@ class NestingController:
             'font_path': self.ui.selected_font_path,
             'show_bounds': self.ui.show_bounds_checkbox.isChecked(),
             'add_labels': self.ui.add_labels_checkbox.isChecked(),
-            'label_height': self.ui.label_height_input.value(),
-            'part_grid_resolution': self.ui.part_grid_resolution_spinbox.value(),
+            'label_height': self.ui.label_height_input.value(), # This widget is in NestingPanel
             'edit_mode': edit_mode,
-            'original_layout_name': original_layout_name,
-            'view_grid': self.ui.view_grid_checkbox.isChecked()
+            'original_layout_name': original_layout_name
         }
         # Explicitly reset the preview controller and its state for the new run.
         self.preview_sheet_layouts.clear()
@@ -174,19 +169,17 @@ class NestingController:
             # Update the persistent state with the new data
             self.preview_sheet_layouts.update(sheet_layouts_dict)
             # On every animation frame, update the UI parameters in case they changed (e.g., grid resolution slider)
-            self.last_run_ui_params['part_grid_resolution'] = self.ui.part_grid_resolution_spinbox.value()
             self.last_run_ui_params['show_bounds'] = self.ui.show_bounds_checkbox.isChecked()
             
-            preview_controller.draw_preview(self.preview_sheet_layouts, self.last_run_ui_params, moving_part, current_sheet_id, grid_info)
+            preview_controller.draw_preview(self.preview_sheet_layouts, self.last_run_ui_params, moving_part, current_sheet_id, grid_info) # This is a placeholder, will be replaced by the correct import
 
-        update_callback = full_layout_preview_callback if self.ui.animate_nesting_checkbox.isChecked() else None
+        update_callback = full_layout_preview_callback if self.ui.animate_nesting_checkbox.isChecked() else None # This widget is in NestingPanel
 
         try:
             sheets, remaining_parts_to_nest, total_steps = nest(
                 parts_to_nest,
                 sheet_w, sheet_h,
-                global_rotation_steps, algorithm, # Pass global steps for BaseNester init
-                view_grid=self.ui.view_grid_checkbox.isChecked(), # Pass grid view flag
+                global_rotation_steps, algorithm,
                 update_callback=update_callback,
                 **algo_kwargs
             )
@@ -200,7 +193,7 @@ class NestingController:
         self.last_run_unplaced_parts = remaining_parts_to_nest
 
         # Draw the final state of the preview if animation was off
-        if not self.ui.animate_nesting_checkbox.isChecked():
+        if not self.ui.animate_nesting_checkbox.isChecked(): # This widget is in NestingPanel
             preview_layouts = {s.id: [p.shape.shape_bounds for p in s.parts] for s in sheets}
             preview_controller.draw_preview(preview_layouts, self.last_run_ui_params)
         QtGui.QApplication.processEvents()
@@ -236,10 +229,6 @@ class NestingController:
         
         # Finally, draw the layout
         layout_controller.draw()
-
-        # After drawing, if the grid is supposed to be visible, draw it now.
-        if self.ui.view_grid_checkbox.isChecked():
-            self.toggle_grid_visibility()
 
     def toggle_bounds_visibility(self):
         """Toggles the visibility of boundary objects by creating or deleting them directly."""
@@ -289,139 +278,9 @@ class NestingController:
 
         self.doc.recompute()
 
-    def toggle_grid_visibility(self):
-        """Toggles the visibility of part grid objects by creating or deleting them directly."""
-        if not self.doc:
-            return
-
-        if not self.last_run_sheets:
-            self.ui.status_label.setText("No layout data found. Please run nesting first.")
-            return
-
-        is_visible = self.ui.view_grid_checkbox.isChecked()
-        self.last_run_ui_params['view_grid'] = is_visible
-
-        if is_visible:
-            self.ui.status_label.setText("Creating grid objects...")
-            spacing = self.last_run_ui_params.get('spacing', 0)
-
-            for sheet in self.last_run_sheets:
-                sheet_origin = sheet.get_origin(spacing)
-                # The final parts are placed in a group named "Objects_X" inside "Sheet_X".
-                # This is the correct group to add the grid objects to.
-                objects_group = self.doc.getObject(f"Objects_{sheet.id+1}")
-                if not objects_group: continue
-
-                for placed_part in sheet.parts:
-                    shape = placed_part.shape
-                    grid_obj_name = f"part_grid_{shape.id}"
-                    # Only draw if the grid objects don't already exist.
-                    if not self.doc.getObject(f"{grid_obj_name}_filled"):
-                        if shape.shape_bounds and shape.shape_bounds.unbuffered_polygon:
-                            # We pass the placed_part to get the final placement information.
-                            self._draw_part_grid(placed_part, objects_group, sheet_origin)
-
-            self.ui.status_label.setText("Grid objects are now visible.")
-        else:
-            self.ui.status_label.setText("Removing grid objects...")
-            # Find and delete all grid objects and their container groups
-            for obj in list(self.doc.Objects):
-                if obj.Name.startswith("part_grid_"):
-                    try: self.doc.removeObject(obj.Name)
-                    except: pass
-            self.ui.status_label.setText("Grid objects have been hidden.")
-
-        self.doc.recompute()
-
-    def _create_compound_wire_from_polygon(self, polygon):
-        """
-        Creates a Part.Compound containing wires for the exterior and all interiors of a polygon.
-        Returns None if the polygon is invalid.
-        """
-        if not polygon or polygon.is_empty:
-            return None
-
-        wires = []
-        # Create exterior wire
-        exterior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in polygon.exterior.coords]
-        if len(exterior_verts) > 2: wires.append(Part.makePolygon(exterior_verts))
-        # Create interior wires (holes)
-        for interior in polygon.interiors:
-            interior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in interior.coords]
-            if len(interior_verts) > 2: wires.append(Part.makePolygon(interior_verts))
-        return Part.makeCompound(wires) if wires else None
-
-    def _draw_part_grid(self, placed_part, group, sheet_origin):
-        """Draws a grid of colored lines based on the pre-calculated shape_bounds_grid data."""
-        shape = placed_part.shape
-        if not shape.shape_bounds or not hasattr(shape.shape_bounds, 'shape_bounds_grid') or not self.last_run_ui_params.get('view_grid', False):
-            return
-
-        from ...datatypes.vert_state import VertState
-
-        part_grid = shape.shape_bounds.shape_bounds_grid
-        resolution = self.last_run_ui_params.get('part_grid_resolution', 10)
-
-        if not part_grid or resolution <= 0:
-            return
-
-        # The shape_bounds_grid is based on the un-rotated, un-translated, un-buffered polygon.
-        # We need to get its original bounds to calculate the grid point coordinates.
-        rows = len(part_grid)
-        cols = len(part_grid[0])
-
-        # This will hold compounds of lines, one for each color.
-        color_map = {
-            "empty": {"color": (1.0, 1.0, 1.0), "faces": []}, # White
-            "edge":  {"color": (1.0, 0.0, 0.0), "faces": []}, # Red
-            "filled": {"color": (0.0, 0.0, 1.0), "faces": []}  # Blue
-        }
-
-        for r in range(rows):
-            for c in range(cols):
-                state = part_grid[r][c]
-                if state == VertState.EMPTY: continue
-
-                # Draw a square for each grid cell instead of lines between points.
-                # This gives a more accurate representation of the grid's occupancy.
-                # The grid is generated from the origin-centered polygon. We create the
-                # visualization at the origin, and the final placement will move it correctly.
-                # The `populate_shape_bounds_grid` uses the polygon's bounds as an offset, so we must subtract it here.
-                min_x_offset, min_y_offset, _, _ = shape.shape_bounds.unbuffered_polygon.bounds
-                x = (c * resolution) + min_x_offset
-                y = (r * resolution) + min_y_offset
-                z_offset = self.last_run_ui_params.get('label_height', 0.1)
-                cell_face = Part.makePlane(resolution, resolution, FreeCAD.Vector(x, y, z_offset))
-                if state == VertState.EDGE: color_map["edge"]["faces"].append(cell_face)
-                else: color_map["filled"]["faces"].append(cell_face)
-
-        # Get the final, definitive placement for the part. This is the same placement
-        # used to draw the part itself, ensuring the grid aligns perfectly.
-        nested_centroid = FreeCAD.Vector(placed_part.x, placed_part.y, 0)
-        final_placement = shape.get_final_placement(sheet_origin, nested_centroid, placed_part.angle)
-
-        for name, data in color_map.items():
-            if not data["faces"]:
-                continue
-
-            grid_obj_name = f"part_grid_{shape.id}_{name}"
-            grid_obj = self.doc.getObject(grid_obj_name)
-            if not grid_obj:
-                grid_obj = self.doc.addObject("Part::Feature", grid_obj_name)
-
-            # Create a compound of all the cell faces for this color.
-            grid_obj.Shape = Part.Compound(data["faces"])
-            grid_obj.Placement = final_placement # Apply the final part placement
-            group.addObject(grid_obj)
-            if FreeCAD.GuiUp:
-                # Use ShadingColor for faces instead of LineColor
-                grid_obj.ViewObject.ShapeColor = data["color"]
-                grid_obj.ViewObject.Transparency = 30 # Make them slightly transparent
-                grid_obj.ViewObject.Selectable = False
-
     def _prepare_parts_from_ui(self, spacing, boundary_resolution):
         """Reads the UI table and creates a list of Shape objects to be nested."""
-        global_rotation_steps = self.ui.rotation_steps_spinbox.value()
+        global_rotation_steps = self.ui.rotation_steps_spinbox.value() # This widget is in NestingPanel
         quantities = {}
         for row in range(self.ui.shape_table.rowCount()):
             try:
@@ -429,7 +288,7 @@ class NestingController:
                 quantity = self.ui.shape_table.cellWidget(row, 1).value()
                 # The widget in column 2 is a QWidget containing a layout with a spinbox
                 rotation_widget = self.ui.shape_table.cellWidget(row, 2) # type: ignore
-                rotation_value = rotation_widget.findChild(QtGui.QSpinBox).value()
+                rotation_value = rotation_widget.findChild(QtGui.QSpinBox).value() # This widget is in NestingPanel
                 override_enabled = self.ui.shape_table.cellWidget(row, 3).isChecked()
                 
                 # Centralize rotation logic here. The nester will use part.rotation_steps directly.
@@ -454,8 +313,7 @@ class NestingController:
                 bounds = shape_processor.create_single_nesting_part(
                     master_obj, 
                     spacing, 
-                    boundary_resolution,
-                    self.ui.part_grid_resolution_spinbox.value()
+                    boundary_resolution
                 )
                 master_shape_instance.set_shape_bounds(bounds)
             except Exception as e:

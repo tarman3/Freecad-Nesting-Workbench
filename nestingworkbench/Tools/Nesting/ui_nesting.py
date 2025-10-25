@@ -41,27 +41,6 @@ class NestingPanel(QtGui.QWidget):
         self.boundary_resolution_input = QtGui.QSpinBox(); self.boundary_resolution_input.setRange(10, 500); self.boundary_resolution_input.setValue(75)
         self.boundary_resolution_input.setToolTip("Number of points per curve for boundary creation. Higher values are more accurate but slower.")
         
-        # --- Part Grid Resolution Slider ---
-        self.part_grid_resolution_group = QtGui.QWidget()
-        part_grid_layout = QtGui.QHBoxLayout(self.part_grid_resolution_group)
-        part_grid_layout.setContentsMargins(0,0,0,0)
-        self.part_grid_resolution_slider = QtGui.QSlider(QtCore.Qt.Horizontal)
-        self.part_grid_resolution_slider.setRange(10, 1000); self.part_grid_resolution_slider.setValue(254) # Represents 1.0 to 100.0
-        self.part_grid_resolution_spinbox = QtGui.QDoubleSpinBox()
-        self.part_grid_resolution_spinbox.setRange(1.0, 100.0); self.part_grid_resolution_spinbox.setValue(25.4)
-        self.part_grid_resolution_spinbox.setDecimals(1)
-
-        # Custom connections to handle float/int conversion
-        def slider_to_spinbox(value):
-            self.part_grid_resolution_spinbox.setValue(value / 10.0)
-        def spinbox_to_slider(value):
-            self.part_grid_resolution_slider.setValue(int(value * 10))
-        self.part_grid_resolution_slider.valueChanged.connect(slider_to_spinbox)
-        self.part_grid_resolution_spinbox.valueChanged.connect(spinbox_to_slider)
-
-        part_grid_layout.addWidget(self.part_grid_resolution_slider)
-        part_grid_layout.addWidget(self.part_grid_resolution_spinbox)
-
         self.shape_table = QtGui.QTableWidget()
         self.shape_table.setColumnCount(4)
         self.shape_table.setHorizontalHeaderLabels(["Shape", "Quantity", "Rotations", "Enable Override"])
@@ -77,16 +56,8 @@ class NestingPanel(QtGui.QWidget):
         self.rotation_steps_spinbox.valueChanged.connect(self.rotation_steps_slider.setValue)
 
         self.algorithm_dropdown = QtGui.QComboBox()
-        self.algorithm_dropdown.addItems(["Grid Fill", "Gravity", "Genetic", "Minkowski", "SAT"])
+        self.algorithm_dropdown.addItems(["Gravity", "Genetic", "Minkowski", "SAT"])
         self.algorithm_dropdown.setCurrentIndex(0)
-
-        # --- Grid Fill Settings ---
-        self.grid_settings_group = QtGui.QGroupBox("Grid Fill Settings")
-        grid_form_layout = QtGui.QFormLayout()
-        self.view_grid_checkbox = QtGui.QCheckBox("View Grid"); self.view_grid_checkbox.setChecked(False)
-        grid_form_layout.addRow(self.view_grid_checkbox)
-        grid_form_layout.addRow("Part Grid Resolution:", self.part_grid_resolution_group)
-        self.grid_settings_group.setLayout(grid_form_layout)
 
         # --- Genetic Packer Settings ---
         self.genetic_settings_group = QtGui.QGroupBox("Genetic Packer Settings")
@@ -103,7 +74,7 @@ class NestingPanel(QtGui.QWidget):
 
 
         # --- Gravity Packer Settings ---
-        self.gravity_settings_group = QtGui.QGroupBox("Gravity Packer Settings")
+        self.gravity_settings_group = QtGui.QGroupBox("Gravity Nester Settings")
         gravity_form_layout = QtGui.QFormLayout()
 
         # Direction Dial
@@ -132,9 +103,9 @@ class NestingPanel(QtGui.QWidget):
         self.gravity_step_size_input = QtGui.QDoubleSpinBox(); self.gravity_step_size_input.setRange(0.1, 100); self.gravity_step_size_input.setValue(5.0)
         self.gravity_max_spawn_input = QtGui.QSpinBox(); self.gravity_max_spawn_input.setRange(1, 1000); self.gravity_max_spawn_input.setValue(100)
         self.gravity_anneal_steps_input = QtGui.QSpinBox(); self.gravity_anneal_steps_input.setRange(0, 1000); self.gravity_anneal_steps_input.setValue(100)
-        self.anneal_rotate_checkbox = QtGui.QCheckBox("Enable Anneal Rotation"); self.anneal_rotate_checkbox.setChecked(True)
-        self.anneal_translate_checkbox = QtGui.QCheckBox("Enable Anneal Translation"); self.anneal_translate_checkbox.setChecked(True)
-        self.anneal_random_shake_checkbox = QtGui.QCheckBox("Random Anneal Shake Direction"); self.anneal_random_shake_checkbox.setChecked(False)
+        self.anneal_rotate_checkbox = QtGui.QCheckBox("Anneal Rotation"); self.anneal_rotate_checkbox.setChecked(True)
+        self.anneal_translate_checkbox = QtGui.QCheckBox("Anneal Position"); self.anneal_translate_checkbox.setChecked(True)
+        self.anneal_random_shake_checkbox = QtGui.QCheckBox("Random Anneal Direction"); self.anneal_random_shake_checkbox.setChecked(False)
         self.gravity_max_nesting_steps_input = QtGui.QSpinBox(); self.gravity_max_nesting_steps_input.setRange(1, 5000); self.gravity_max_nesting_steps_input.setValue(500)
         gravity_form_layout.addRow("Gravity Direction:", dial_layout)
         gravity_form_layout.addRow(self.gravity_random_checkbox)
@@ -184,7 +155,6 @@ class NestingPanel(QtGui.QWidget):
         form_layout.addRow("Part Spacing:", self.part_spacing_input)
         form_layout.addRow("Boundary Resolution:", self.boundary_resolution_input)
         form_layout.addRow("Algorithm:", self.algorithm_dropdown)
-        form_layout.addRow(self.grid_settings_group)
         form_layout.addRow(self.genetic_settings_group)
         form_layout.addRow(self.gravity_settings_group)
         form_layout.addRow("Identifier Font:", font_layout)
@@ -230,7 +200,6 @@ class NestingPanel(QtGui.QWidget):
         self.nest_button.clicked.connect(self.controller.execute_nesting)
         self.font_select_button.clicked.connect(self.select_font_file)
         self.show_bounds_checkbox.stateChanged.connect(self.controller.toggle_bounds_visibility)
-        self.view_grid_checkbox.stateChanged.connect(self.controller.toggle_grid_visibility)
         self.add_parts_button.clicked.connect(self.add_selected_shapes)
         self.remove_parts_button.clicked.connect(self.remove_selected_shapes)
 
@@ -238,7 +207,6 @@ class NestingPanel(QtGui.QWidget):
         """Shows or hides algorithm-specific settings."""
         algo_name = self.algorithm_dropdown.itemText(index)
         self.genetic_settings_group.setVisible(algo_name == "Genetic")
-        self.grid_settings_group.setVisible(algo_name == "Grid Fill")
         self.gravity_settings_group.setVisible(algo_name == "Gravity")
 
     def load_selection(self):
