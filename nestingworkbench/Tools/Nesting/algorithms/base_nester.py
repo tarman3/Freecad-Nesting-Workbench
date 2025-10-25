@@ -114,9 +114,18 @@ class BaseNester(object):
 
             if sheet.is_placement_valid(shape):
                 if update_callback:
-                    sheet_index = sheet.id if sheet else len(self.sheets)
-                    # On spawn, the sheet is empty, so we only pass the new shape's bounds
-                    update_callback({sheet_index: [shape.shape_bounds]}, moving_part=shape, current_sheet_id=sheet_index)
+                    # On spawn, the sheet is empty. We need to construct the list of sheets
+                    # to pass to the preview drawer, including the new part.
+                    temp_placed_part = PlacedPart(shape) # Create a temporary placement record
+                    sheet.add_part(temp_placed_part) # Add it to the sheet for the preview frame
+                    
+                    # The preview function expects the full list of sheets.
+                    all_sheets_for_preview = list(self.sheets)
+                    if sheet not in all_sheets_for_preview:
+                        all_sheets_for_preview.append(sheet)
+
+                    update_callback(all_sheets_for_preview, moving_part=shape, current_sheet_id=sheet.id)
+                    sheet.parts.remove(temp_placed_part) # IMPORTANT: Remove the temporary part after the preview frame
                 return shape
 
         return None

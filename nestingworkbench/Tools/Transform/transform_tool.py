@@ -38,24 +38,36 @@ class TransformToolObserver:
         for sheet_group in self.layout_group.Group:
             if sheet_group.isDerivedFrom("App::DocumentObjectGroup"):
                 # Ensure sheet boundary is visible
-                sheet_boundary = next((obj for obj in sheet_group.Group if obj.Label.startswith("SheetBoundary")), None)
+                sheet_boundary = next((obj for obj in sheet_group.Group if obj.Label.startswith("Sheet_Boundary_")), None)
                 if sheet_boundary and hasattr(sheet_boundary, "ViewObject"):
                     self.original_visibilities[sheet_boundary] = sheet_boundary.ViewObject.Visibility
                     sheet_boundary.ViewObject.Visibility = True
 
-                for sub_group in sheet_group.Group: # e.g., "Objects_1", "Bounds_1"
+                for sub_group in sheet_group.Group: # e.g., Shapes_1, Text_1
                     if sub_group.isDerivedFrom("App::DocumentObjectGroup"):
-                        for obj in sub_group.Group: # e.g., "packed_Part_1"
-                            self.original_placements[obj] = obj.Placement.copy()
-                            # Manage visibility
-                            if hasattr(obj, "ViewObject"):
-                                self.original_visibilities[obj] = obj.ViewObject.Visibility
-                                # Hide packed parts, show bounds/labels
-                                if obj.Label.startswith("packed_"):
-                                    obj.ViewObject.Visibility = False
-                                elif obj.Label.startswith("bound_") or obj.isDerivedFrom("Draft::ShapeString"):
-                                    obj.ViewObject.Visibility = True
-        
+                        if sub_group.Label.startswith("Shapes_"):
+                            for obj in sub_group.Group: # e.g., nested_PartA_1
+                                if hasattr(obj, "Proxy") and isinstance(obj.Proxy, object) and obj.Proxy.__class__.__name__ == "ShapeObject":
+                                    self.original_placements[obj] = obj.Placement.copy()
+                                    if hasattr(obj, "ViewObject"):
+                                        self.original_visibilities[obj] = obj.ViewObject.Visibility
+                                        obj.ViewObject.Visibility = False # Hide the 3D shape
+                                        
+                                        # Manage visibility of linked objects (BoundaryObject and LabelObject)
+                                        if hasattr(obj, "BoundaryObject") and obj.BoundaryObject and hasattr(obj.BoundaryObject, "ViewObject"):
+                                            self.original_visibilities[obj.BoundaryObject] = obj.BoundaryObject.ViewObject.Visibility
+                                            obj.BoundaryObject.ViewObject.Visibility = True # Always show bounds in transform mode
+                                        if hasattr(obj, "LabelObject") and obj.LabelObject and hasattr(obj.LabelObject, "ViewObject"):
+                                            self.original_visibilities[obj.LabelObject] = obj.LabelObject.ViewObject.Visibility
+                                            obj.LabelObject.ViewObject.Visibility = True # Always show label in transform mode
+                        elif sub_group.Label.startswith("Text_"):
+                            for label_obj in sub_group.Group: # e.g., label_unplaced_PartB
+                                if hasattr(label_obj, "Proxy") and isinstance(label_obj.Proxy, object) and label_obj.Proxy.__class__.__name__ == "LabelObject":
+                                    self.original_placements[label_obj] = label_obj.Placement.copy()
+                                    if hasattr(label_obj, "ViewObject"):
+                                        self.original_visibilities[label_obj] = label_obj.ViewObject.Visibility
+                                        label_obj.ViewObject.Visibility = True # Ensure standalone labels are visible
+
         # After changing visibilities, we need to update the GUI to reflect them.
         FreeCADGui.updateGui()
 
@@ -71,10 +83,11 @@ class TransformToolObserver:
                 info = self.view.getObjectInfo((pos.x(), pos.y()))
                 if info and "Object" in info:
                     clicked_obj = info["Object"]
-                    # Check if the clicked object is part of the selected layout
-                    if self.is_object_in_layout(clicked_obj):
+                    obj_to_drag = self.get_draggable_parent(clicked_obj)
+                    
+                    if obj_to_drag:
                         self.pressed = True
-                        self.obj_to_move = clicked_obj
+                        self.obj_to_move = obj_to_drag
                         self.start_pos = self.view.getPoint(pos.x(), pos.y())
                         self.start_placement = self.obj_to_move.Placement.copy()
                         return True # Event handled
@@ -103,30 +116,46 @@ class TransformToolObserver:
 
         return False # Event not handled
 
+    def get_draggable_parent(self, obj):
+        """
+        Determines the actual object to drag based on what was clicked.
+        If a child (bound_ or label_) of a ShapeObject was clicked, return the ShapeObject.
+        Otherwise, return the object itself if it's a ShapeObject or a standalone label.
+        """        
+        # Check if the clicked object is a linked boundary or label of a ShapeObject
+        for potential_parent_shape_obj in self.original_placements.keys():
+            if hasattr(potential_parent_shape_obj, "Proxy") and isinstance(potential_parent_shape_obj.Proxy, object) and potential_parent_shape_obj.Proxy.__class__.__name__ == "ShapeObject":
+                if hasattr(potential_parent_shape_obj, "BoundaryObject") and potential_parent_shape_obj.BoundaryObject == obj:
+                    return potential_parent_shape_obj # Drag the ShapeObject parent
+                if hasattr(potential_parent_shape_obj, "LabelObject") and potential_parent_shape_obj.LabelObject == obj:
+                    return potential_parent_shape_obj # Drag the ShapeObject parent
+        
+        return None # Not a draggable object
+
     def is_object_in_layout(self, obj):
         """Check if an object is a child of the selected layout group."""
+        # This method is now primarily used to check if a clicked object is *part* of the layout,
+        # not necessarily if it's directly draggable. get_draggable_parent handles that.
         for sheet_group in self.layout_group.Group:
             if sheet_group.isDerivedFrom("App::DocumentObjectGroup"):
-                for sub_group in sheet_group.Group:
-                    if obj in sub_group.Group:
+                for sub_group in sheet_group.Group: # e.g., Shapes_1, Text_1
+                    if sub_group.isDerivedFrom("App::DocumentObjectGroup") and obj in sub_group.Group:
                         return True
         return False
 
-    def save_placements(self):
+    def save_placements(self): # This method is now part of the TransformToolObserver
         """Saves the new placements to the layout's OriginalPlacements property."""
         if not self.layout_group:
             return
 
-        # This logic is now handled by the panel manager's accept() method.
-        # We can add properties to the layout group to store changes if needed,
-        # but for simple drag/drop, the change is already applied to the object's Placement.
+        # The placements are already applied to the objects.
         FreeCAD.Console.PrintMessage(f"Saved new placements for transformed objects.\n")
         # If sheets were stacked, this move breaks the "stacked" state
         if hasattr(self.layout_group, 'IsStacked') and self.layout_group.IsStacked:
             self.layout_group.IsStacked = False
             FreeCAD.Console.PrintWarning("Layout is no longer considered stacked due to manual adjustment.\n")
 
-    def cancel(self):
+    def cancel(self): # This method is now part of the TransformToolObserver
         """Reverts any changes made to the object placements."""
         if self.original_placements:
             for obj, placement in self.original_placements.items():
@@ -134,13 +163,14 @@ class TransformToolObserver:
                     obj.Placement = placement
             FreeCAD.Console.PrintMessage("Transformations cancelled.\n")
 
-    def cleanup(self):
-        """Removes the event callbacks from the view."""
+    def cleanup(self): # This method is now part of the TransformToolObserver
+        """Removes the event callbacks from the view and restores original visibilities."""
         try:
             self.view.removeEventCallback("SoMouseButtonEvent", self.eventCallback)
             self.view.removeEventCallback("SoLocation2Event", self.eventCallback)
         except Exception as e:
             FreeCAD.Console.PrintWarning(f"Could not remove transform observer callbacks: {e}\n")
+        
         self.original_placements = {}
         # Restore original visibility
         for obj, is_visible in self.original_visibilities.items():

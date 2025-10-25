@@ -6,6 +6,7 @@ This module contains shared utility functions for drawing objects in FreeCAD.
 
 import FreeCAD
 import Part
+from ...datatypes.sheet_object import create_sheet
 
 def create_face_from_polygon(polygon):
     """
@@ -43,3 +44,64 @@ def create_face_from_polygon(polygon):
                 FreeCAD.Console.PrintWarning("Could not create or cut a hole for debug union shape.\n")
 
     return face
+
+class LayoutDrawer:
+    """A static class for handling drawing operations for nesting layouts."""
+
+    @staticmethod
+    def draw_preview(doc, preview_group, sheets, ui_params):
+        """
+        Draws a preview of the nesting layout, optimized for animation.
+        It finds/creates and updates boundary objects for each part.
+        """
+        if not doc or not preview_group:
+            return
+
+        spacing = ui_params.get('spacing', 0)
+        sheet_w = ui_params.get('sheet_w', 0)
+        sheet_h = ui_params.get('sheet_h', 0)
+
+        # Keep track of objects that are part of the current preview
+        active_object_names = set()
+
+        for sheet in sheets:
+            # --- Draw Sheet Boundary ---
+            sheet_boundary_name = f"preview_sheet_boundary_{sheet.id}"
+            active_object_names.add(sheet_boundary_name)
+            sheet_boundary_obj = doc.getObject(sheet_boundary_name)
+            if not sheet_boundary_obj:
+                sheet_boundary_obj = create_sheet(sheet_boundary_name)
+                sheet_boundary_obj.SheetWidth = sheet_w
+                sheet_boundary_obj.SheetHeight = sheet_h
+                preview_group.addObject(sheet_boundary_obj)
+            sheet_boundary_obj.Placement = FreeCAD.Placement(sheet.get_origin(spacing), FreeCAD.Rotation())
+
+            # --- Draw Part Boundaries ---
+            for part in sheet.parts:
+                shape = part.shape
+                bound_obj_name = f"preview_bound_{shape.id}"
+                active_object_names.add(bound_obj_name)
+                bound_obj = doc.getObject(bound_obj_name)
+
+                # This logic is moved from Shape.draw_bounds
+                final_polygon = shape.get_final_bounds_polygon(sheet.get_origin(spacing))
+                if not final_polygon: continue
+
+                exterior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in final_polygon.exterior.coords]
+                if len(exterior_verts) < 3: continue
+                
+                new_shape = Part.makePolygon(exterior_verts)
+
+                if bound_obj:
+                    bound_obj.Shape = new_shape
+                else:
+                    bound_obj = doc.addObject("Part::Feature", bound_obj_name)
+                    bound_obj.Shape = new_shape
+                    preview_group.addObject(bound_obj)
+                    if FreeCAD.GuiUp: bound_obj.ViewObject.LineColor = (1.0, 0.0, 0.0)
+
+        # --- Cleanup ---
+        # Remove any objects from the preview group that are not part of the current frame
+        for obj in list(preview_group.Group):
+            if obj.Name not in active_object_names:
+                doc.removeObject(obj.Name)

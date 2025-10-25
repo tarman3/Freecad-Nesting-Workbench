@@ -20,6 +20,9 @@ try:
 except ImportError:
     Draft = None
 
+from .shape_object import create_shape_object
+from .label_object import create_label_object
+
 class Sheet:
     """
     Represents a single sheet (or bin) in the nesting layout. It contains
@@ -168,10 +171,10 @@ class Sheet:
         self.parent_group_name = parent_group.Name
 
         # Create the group structure for this sheet
-        sheet_group = doc.addObject("App::DocumentObjectGroup", f"Sheet_{self.id+1}")
-        objects_group = doc.addObject("App::DocumentObjectGroup", f"Objects_{self.id+1}")
+        sheet_group = doc.addObject("App::DocumentObjectGroup", f"Sheet_{self.id+1}") # e.g. Sheet_1
+        shapes_group = doc.addObject("App::DocumentObjectGroup", f"Shapes_{self.id+1}") # e.g. Shapes_1
         text_group = doc.addObject("App::DocumentObjectGroup", f"Text_{self.id+1}")
-        sheet_group.addObject(objects_group)
+        sheet_group.addObject(shapes_group)
         sheet_group.addObject(text_group)
         parent_group.addObject(sheet_group)
 
@@ -190,30 +193,41 @@ class Sheet:
             final_placement = shape.get_final_placement(sheet_origin, nested_centroid_on_sheet, placed_part.angle)
 
             if draw_shape:
-                new_obj = doc.addObject("Part::Feature", f"nested_{shape.id}")
-                new_obj.Shape = shape.source_freecad_object.Shape.copy()
-                new_obj.Placement = final_placement
-                objects_group.addObject(new_obj)
+                shape_obj = create_shape_object(f"nested_{shape.id}")
+                
+                shape_obj.Shape = shape.source_freecad_object.Shape.copy()
+                shape_obj.Placement = final_placement
+                shapes_group.addObject(shape_obj)
 
-            if draw_shape_bounds and shape.show_bounds and shape.shape_bounds.polygon:
-                shape.draw_bounds(doc, sheet_origin, objects_group)
+                # Set initial visibility from UI params, which will also set the ShowShape property
+                shape_obj.ShowShape = True
+                shape_obj.ShowBounds = ui_params.get('show_bounds', False)
+                shape_obj.ShowLabel = ui_params.get('add_labels', False)
 
+            # Always create the boundary object if the data exists.
+            if shape.shape_bounds and shape.shape_bounds.polygon:
+                # The draw_bounds method now returns the created boundary object
+                boundary_obj = shape.draw_bounds(doc, sheet_origin, shapes_group)
+                if 'shape_obj' in locals() and boundary_obj:
+                    # Link the boundary to the shape object
+                    shape_obj.BoundaryObject = boundary_obj
+                    # Now that the link is established, set the boundary's visibility
+                    # based on the 'ShowBounds' property, which was set from the UI.
+                    if hasattr(boundary_obj, "ViewObject"):
+                        boundary_obj.ViewObject.Visibility = shape_obj.ShowBounds
+                        
             if ui_params.get('add_labels', False) and Draft and ui_params.get('font_path') and hasattr(shape, 'label_text') and shape.label_text:
                 # Create the Draft.ShapeString object here, just before drawing.
-                # This ensures it's a fresh FreeCAD object for the current run.
-                label_obj = Draft.make_shapestring(
+                label_obj = create_label_object(f"label_{shape.id}")
+
+                # Create the underlying ShapeString geometry
+                shapestring_geom = Draft.make_shapestring(
                     String=shape.label_text,
                     FontFile=ui_params['font_path'],
                     Size=ui_params.get('spacing', 0) * 0.6 # Use spacing from ui_params
                 )
-                label_obj.Label = f"label_{shape.id}"
-                
-                # Ensure the label object has a shape before proceeding
-                if not hasattr(label_obj, "Shape"):
-                    FreeCAD.Console.PrintWarning(f"Could not get Shape from label object {label_obj.Label}. Skipping label placement.\n")
-                    continue
-
-                # Center the shapestring on the part's bounding box centroid
+                label_obj.Shape = shapestring_geom.Shape
+                doc.removeObject(shapestring_geom.Name) # Remove the temporary Draft object
                 shapestring_bb = label_obj.Shape.BoundBox
                 shapestring_center = shapestring_bb.Center
 
@@ -229,3 +243,6 @@ class Sheet:
                 label_obj.Placement = FreeCAD.Placement(label_placement_base, FreeCAD.Rotation())
                 
                 text_group.addObject(label_obj)
+                if 'shape_obj' in locals():
+                    shape_obj.LabelObject = label_obj # Link to property
+                    label_obj.ViewObject.Visibility = shape_obj.ShowLabel # Set initial visibility

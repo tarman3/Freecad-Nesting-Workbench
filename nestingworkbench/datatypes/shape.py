@@ -19,10 +19,10 @@ class Shape:
     its instance number, a reference to its geometric bounds, and its final
     calculated placement. This class acts as the central data carrier.
     """
-    def __init__(self, source_freecad_object, instance_num=1):
+    def __init__(self, source_freecad_object):
         self.source_freecad_object = source_freecad_object
-        self.instance_num = instance_num
-        self.id = f"{source_freecad_object.Label}_{instance_num}"
+        self.instance_num = 1 # Default, will be overridden on copies
+        self.id = f"{source_freecad_object.Label}_{self.instance_num}"
         
         # This will hold the ShapeBounds object associated with this shape.
         # It is initialized externally after the Shape is created. Using __ for name mangling.
@@ -55,16 +55,17 @@ class Shape:
                 setattr(result, k, copy.deepcopy(v, memo))
         return result
 
-    def generate_bounds(self, shape_processor, tolerance=0.0):
+    def generate_bounds(self, shape_processor, spacing, resolution):
         """
         Uses a shape processor to generate the ShapeBounds object for this shape
         and establishes a back-reference.
 
         :param shape_processor: The processor object capable of converting a FreeCAD object.
-        :param tolerance: The tolerance for the shape conversion.
+        :param spacing: The spacing to apply for the buffered boundary.
+        :param resolution: The resolution for discretizing curves.
         :return: The generated ShapeBounds object, or None on failure.
         """
-        self.__shape_bounds = shape_processor.get_shape_bounds(self.source_freecad_object, tolerance)
+        self.__shape_bounds = shape_processor.create_single_nesting_part(self.source_freecad_object, spacing, resolution)
         return self.__shape_bounds
 
     @property
@@ -92,33 +93,35 @@ class Shape:
             doc (FreeCAD.Document): The active document.
             sheet_origin (FreeCAD.Vector): The origin of the sheet this part is on.
             group (App.DocumentObjectGroup): The group to add the new objects to.
+        Returns:
+            App.DocumentObject: The created or updated boundary object, or None.
         """
         final_polygon = self.get_final_bounds_polygon(sheet_origin)
-        if not final_polygon:
-            return
+        if not final_polygon: return None
 
-        name_prefix = f"bound_{self.id}"
+        bound_obj_name = f"bound_{self.id}"
+        bound_obj = doc.getObject(bound_obj_name)
 
-        # Draw exterior
+        wires = []
+        # Create exterior wire
         exterior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in final_polygon.exterior.coords]
-        if len(exterior_verts) > 2:
-            bound_wire = Part.makePolygon(exterior_verts)
-            bound_obj = doc.addObject("Part::Feature", f"{name_prefix}_ext")
-            bound_obj.Shape = bound_wire
-            group.addObject(bound_obj)
-            if FreeCAD.GuiUp:
-                bound_obj.ViewObject.LineColor = (1.0, 0.0, 0.0) # Red for bounds
-
-        # Draw interiors (holes)
+        if len(exterior_verts) > 2: wires.append(Part.makePolygon(exterior_verts))
+        # Create interior wires (holes)
         for i, interior in enumerate(final_polygon.interiors):
             interior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in interior.coords]
-            if len(interior_verts) > 2:
-                hole_wire = Part.makePolygon(interior_verts)
-                hole_obj = doc.addObject("Part::Feature", f"{name_prefix}_int_{i}")
-                hole_obj.Shape = hole_wire
-                group.addObject(hole_obj)
-                if FreeCAD.GuiUp:
-                    hole_obj.ViewObject.LineColor = (1.0, 0.0, 0.0) # Red for bounds
+            if len(interior_verts) > 2: wires.append(Part.makePolygon(interior_verts))
+        if not wires: return None
+
+        new_shape = Part.makeCompound(wires)
+
+        if bound_obj:
+            bound_obj.Shape = new_shape
+        else:
+            bound_obj = doc.addObject("Part::Feature", bound_obj_name)
+            bound_obj.Shape = new_shape
+            group.addObject(bound_obj)
+            if FreeCAD.GuiUp: bound_obj.ViewObject.LineColor = (1.0, 0.0, 0.0)
+        return bound_obj
 
     def get_final_placement(self, sheet_origin, nested_centroid, angle_deg):
         """

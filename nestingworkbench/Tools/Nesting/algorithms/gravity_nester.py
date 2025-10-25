@@ -23,7 +23,7 @@ class GravityNester(BaseNester):
         Tries to place a single part on the given sheet using gravity simulation.
         Returns the placed part on success, None on failure.
         """
-        spawned_part = self._try_spawn_part(part_to_place, sheet)
+        spawned_part = self._try_spawn_part(part_to_place, sheet, update_callback)
         
         if spawned_part:
             if self.gravity_direction is None: # None indicates random direction
@@ -36,13 +36,13 @@ class GravityNester(BaseNester):
         else:
             return None
 
-    def _try_spawn_part(self, part, sheet):
+    def _try_spawn_part(self, part, sheet, update_callback=None):
         """
         Tries to place a part at a random location without initial collision.
         Returns the spawned part on success, or None on failure.
         """
         for _ in range(self.max_spawn_count):
-            return super()._try_spawn_part(part, sheet)
+            return super()._try_spawn_part(part, sheet, update_callback)
         return None
 
     def _move_until_collision(self, part, sheet, direction, update_callback=None):
@@ -54,9 +54,7 @@ class GravityNester(BaseNester):
 
         for _ in range(self.max_nesting_steps):
             if update_callback:
-                sheet_index = sheet.id if sheet else len(self.sheets)
-                current_bounds = [p.shape.shape_bounds for p in sheet.parts] if sheet else []
-                update_callback({sheet_index: current_bounds + [part.shape_bounds]}, moving_part=part, current_sheet_id=sheet_index)
+                update_callback(self.sheets, moving_part=part, current_sheet_id=sheet.id)
 
             # Record the last valid position's bottom-left corner
             last_valid_x, last_valid_y, _, _ = part.bounding_box()
@@ -73,14 +71,14 @@ class GravityNester(BaseNester):
                     pre_shake_pos = (pre_shake_centroid.x, pre_shake_centroid.y) if pre_shake_centroid else (0, 0)
                     new_pos = pre_shake_pos # Start with the current position
                     
-                    # --- Step 1: Try rotation-only annealing ---
-                    rot_pos, rot_rot = self._anneal_part(part, sheet, direction, update_callback, rotate_override=True, translate_override=False)
+                    # --- Step 1: Try rotation-only annealing --- (Pass the callback)
+                    rot_pos, rot_rot = self._anneal_part(part, sheet, direction, update_callback=update_callback, rotate_override=True, translate_override=False)
                     
                     # Check if rotation found a valid spot. If not, try translation.
                     moved_distance_sq_rot = (rot_pos[0] - pre_shake_pos[0])**2 + (rot_pos[1] - pre_shake_pos[1])**2
                     if math.isclose(moved_distance_sq_rot, 0.0):
-                        # --- Step 2: Try translation-only annealing ---
-                        new_pos, new_rot = self._anneal_part(part, sheet, direction, update_callback, rotate_override=False, translate_override=True)
+                        # --- Step 2: Try translation-only annealing --- (Pass the callback)
+                        new_pos, new_rot = self._anneal_part(part, sheet, direction, update_callback=update_callback, rotate_override=False, translate_override=True)
                     else:
                         new_pos = rot_pos
 

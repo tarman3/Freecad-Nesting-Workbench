@@ -243,19 +243,13 @@ class NestingPanel(QtGui.QWidget):
             self.font_label.setText(os.path.basename(layout_group.FontFile))
 
         # Get the shapes from the layout
-        shapes = []
-        for sheet_group in layout_group.Group:
-            if sheet_group.isDerivedFrom("App::DocumentObjectGroup") and sheet_group.Label.startswith("Sheet_"):
-                objects_group = sheet_group.getObject(f"Objects_{sheet_group.Label.split('_')[1]}")
-                if objects_group:
-                    for obj in objects_group.Group:
-                        if obj.isDerivedFrom("Part::Feature") and obj.Label.startswith("packed_"):
-                            original_label = obj.Label.split("_")[1]
-                            original_obj = self.doc.getObject(original_label)
-                            if original_obj:
-                                shapes.append(original_obj)
-        
-        self.load_shapes(shapes)
+        master_shapes_group = layout_group.getObject("MasterShapes")
+        if master_shapes_group:
+            # The master shapes are now copies inside this group.
+            shapes_to_load = list(master_shapes_group.Group)
+            self.load_shapes(shapes_to_load)
+        else:
+            self.status_label.setText("Warning: Could not find 'MasterShapes' group in the selected layout.")
 
     def load_shapes(self, selection):
         """Loads a selection of shapes into the UI."""

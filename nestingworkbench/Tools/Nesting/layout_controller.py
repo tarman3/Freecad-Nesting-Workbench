@@ -1,56 +1,67 @@
 # Nesting/nesting/layout_controller.py
 
 """
-This module contains the LayoutController class, which is responsible for
-managing and drawing a complete nesting layout.
+This module contains the LayoutController class, which is responsible for managing
+and drawing a complete nesting layout, including both final and preview states.
 """
 
-import FreeCAD
-import Part
+# Standard library imports
 import copy
 import math
+
+# FreeCAD imports
+import FreeCAD
+import Part
+
+# Local application/library specific imports
+from Nesting.nestingworkbench.datatypes.shape_object import create_shape_object
+from Nesting.nestingworkbench.datatypes.sheet_object import create_sheet
+from Nesting.nestingworkbench.datatypes.label_object import create_label_object
 
 try:
     from shapely.affinity import translate
 except ImportError:
     translate = None
 
+try:
+    import Draft
+except ImportError:
+    Draft = None
+
 class LayoutController:
     """
     Manages the state and representation of a nested layout, including all
     sheets and the parts placed on them.
     """
-    def __init__(self, doc, sheets, ui_params, preview_group_name=None, unplaced_parts=None):
-        self.doc = doc
+    def __init__(self, obj):
+        """
+        This is now the constructor for the scripted object proxy.
+        It's called when a new LayoutObject is created.
+        """
+        obj.Proxy = self
+        self.obj = obj
+        self.sheets = []
+        self.master_shapes = []
+        self.ui_params = {}
+        self.unplaced_parts = []
+
+    def setup(self, sheets, ui_params, master_shapes, unplaced_parts):
+        """A method to pass run-time data to the proxy before execution."""
         self.sheets = sheets
         self.ui_params = ui_params
-        self.preview_group_name = preview_group_name
-        self.unplaced_parts = unplaced_parts if unplaced_parts is not None else []
+        self.master_shapes = master_shapes
+        self.unplaced_parts = unplaced_parts
 
     def calculate_sheet_fills(self):
         """Calculates the fill percentage for each sheet in the layout."""
         return [sheet.calculate_fill_percentage() for sheet in self.sheets]
 
-    def draw(self):
+    def _create_layout_group(self):
         """
-        Creates the final layout group and draws all sheets and their contents.
+        Creates or finds the main layout group and populates it with properties
+        and parameters from the nesting run.
         """
-        if not self.doc:
-            return
-
-        # --- Create Final Layout Group and Spreadsheet ---
-        group_name = "Layout_000" # Default name
-        if self.ui_params.get('edit_mode') and self.ui_params.get('original_layout_name'):
-            group_name = self.ui_params['original_layout_name']
-        else:
-            # Find the next available unique name for the final layout's LABEL.
-            base_name, i = "Layout", 0
-            existing_labels = [o.Label for o in self.doc.Objects]
-            while f"{base_name}_{i:03d}" in existing_labels:
-                i += 1
-            group_name = f"{base_name}_{i:03d}"
-
-        parent_group = self.doc.addObject("App::DocumentObjectGroup", group_name)
+        parent_group = self.obj # The scripted object itself is the group
         parent_group.addProperty("App::PropertyBool", "IsStacked", "Nesting").IsStacked = False
         parent_group.addProperty("App::PropertyMap", "OriginalPlacements", "Nesting")
 
@@ -60,20 +71,87 @@ class LayoutController:
         parent_group.addProperty("App::PropertyFloat", "PartSpacing", "Nesting").PartSpacing = self.ui_params.get('spacing', 0)
         parent_group.addProperty("App::PropertyFile", "FontFile", "Nesting").FontFile = self.ui_params.get('font_path', '')
 
-        # Store efficiencies in a PropertyMap for cleanliness
+        # Store efficiencies in a PropertyMap
         sheet_fills = self.calculate_sheet_fills()
         if sheet_fills:
             parent_group.addProperty("App::PropertyMap", "SheetEfficiencies", "Nesting")
             efficiencies_map = {f"Sheet_{i+1}": f"{eff:.2f}%" for i, eff in enumerate(sheet_fills)}
             parent_group.SheetEfficiencies = efficiencies_map
+        return parent_group
+
+    def execute(self, fp):
+        """Creates the final layout group and draws all sheets and their contents."""
+        # fp is the feature python object (self.obj)
+        parent_group = fp
+        
+        # --- Create and populate the hidden MasterShapes group ---
+        if self.master_shapes:
+            master_shapes_group = self.doc.addObject("App::DocumentObjectGroup", "MasterShapes")
+            for shape_wrapper in self.master_shapes: # shape_wrapper is a Shape object
+                original_obj = shape_wrapper.source_freecad_object
+                # Create a ShapeObject to store as the master, leaving the original untouched.
+                master_obj = create_shape_object(f"master_{original_obj.Label.replace('master_', '').replace('nested_', '')}")
+                
+                # The shape_bounds.source_centroid contains the necessary offset to align
+                # the shape with its origin-centered boundary polygon.
+                shape_copy = original_obj.Shape.copy()
+                if shape_wrapper.shape_bounds and shape_wrapper.shape_bounds.source_centroid:
+                    shape_copy.translate(-shape_wrapper.shape_bounds.source_centroid)
+                
+                master_obj.Shape = shape_copy
+                master_shapes_group.addObject(master_obj)
+
+                # Now, draw the bounds for this master shape and link them.
+                # The bounds are drawn at the document origin (0,0,0) as they are just for reference.
+                if shape_wrapper.shape_bounds and shape_wrapper.shape_bounds.polygon:
+                    boundary_obj = shape_wrapper.draw_bounds(self.doc, FreeCAD.Vector(0,0,0), master_shapes_group)
+                    if boundary_obj:
+                        master_obj.BoundaryObject = boundary_obj
+                        # Set initial visibility based on the UI checkbox
+                        master_obj.ShowBounds = self.ui_params.get('show_bounds', False)
+                        boundary_obj.ViewObject.Visibility = master_obj.ShowBounds
+
+                # --- Create Label for Master Shape ---
+                if self.ui_params.get('add_labels', False) and Draft and self.ui_params.get('font_path') and hasattr(shape_wrapper, 'label_text') and shape_wrapper.label_text:
+                    label_obj = create_label_object(f"label_master_{original_obj.Label.replace('master_', '')}")
+                    
+                    # Create the underlying ShapeString geometry
+                    shapestring_geom = Draft.make_shapestring(
+                        String=shape_wrapper.label_text,
+                        FontFile=self.ui_params['font_path'],
+                        Size=self.ui_params.get('spacing', 0) * 0.6
+                    )
+                    label_obj.Shape = shapestring_geom.Shape
+                    self.doc.removeObject(shapestring_geom.Name) # Remove the temporary Draft object
+
+                    # Center the label on the master shape's bounding box
+                    shapestring_bb = label_obj.Shape.BoundBox
+                    shapestring_center = shapestring_bb.Center
+                    
+                    # Master shape is at origin, so its center is its bounding box center.
+                    master_shape_center = master_obj.Shape.BoundBox.Center
+                    master_shape_center.z += self.ui_params.get('label_height', 0.1)
+
+                    label_placement_base = master_shape_center - shapestring_center
+                    label_obj.Placement = FreeCAD.Placement(label_placement_base, FreeCAD.Rotation())
+
+                    master_shapes_group.addObject(label_obj)
+                    master_obj.LabelObject = label_obj # Link to property
+                    master_obj.ShowLabel = self.ui_params.get('add_labels', False) # Set initial visibility
+                    label_obj.ViewObject.Visibility = master_obj.ShowLabel
+
+            parent_group.addObject(master_shapes_group)
+            # Hide the group itself
+            if FreeCAD.GuiUp and hasattr(master_shapes_group, "ViewObject"):
+                master_shapes_group.ViewObject.Visibility = False
 
         spacing = self.ui_params.get('spacing', 0)
 
         # Iterate through the sheets and delegate drawing to the Sheet object itself
         for sheet in self.sheets:
             sheet_origin = sheet.get_origin(spacing)
-            sheet.draw(
-                self.doc,
+            sheet.draw( # The sheet.draw method will now be called inside execute
+                fp.Document,
                 sheet_origin,
                 self.ui_params,
                 parent_group=parent_group,
@@ -81,159 +159,6 @@ class LayoutController:
                 draw_shape_bounds=self.ui_params.get('show_bounds', False)
             )
 
-        self.doc.recompute()
-
-    def _create_compound_wire_from_polygon(self, polygon):
-        """
-        Creates a Part.Compound containing wires for the exterior and all interiors of a polygon.
-        Returns None if the polygon is invalid.
-        """
-        if not polygon or polygon.is_empty:
-            return None
-
-        wires = []
-        # Create exterior wire
-        exterior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in polygon.exterior.coords]
-        if len(exterior_verts) > 2: wires.append(Part.makePolygon(exterior_verts))
-        # Create interior wires (holes)
-        for interior in polygon.interiors:
-            interior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in interior.coords]
-            if len(interior_verts) > 2: wires.append(Part.makePolygon(interior_verts))
-        return Part.makeCompound(wires) if wires else None
-
-    def draw_preview(self, sheet_layouts, ui_params, moving_part=None, current_sheet_id=None, grid_info=None):
-        """Draws a temporary preview of the nesting process, optimized for animation."""
-        if not self.doc or not self.preview_group_name:
-            return
-
-        self.ui_params = ui_params # Always use the latest UI params passed in
-        # --- Full Redraw Cleanup ---
-        # For a full redraw (like in the Genetic algorithm), we must delete the
-        # entire old preview group to ensure no artifacts (like old sheets) remain.
-        if not moving_part:
-            group = self.doc.getObject(self.preview_group_name)
-            if group:
-                self.doc.removeObject(group.Name)
-                self.doc.recompute()
-
-        sheet_w = self.ui_params.get('sheet_w', 0)
-        sheet_h = self.ui_params.get('sheet_h', 0)
-        spacing = self.ui_params.get('spacing', 0)
-
-        # Find or create the main preview group
-        group = self.doc.getObject(self.preview_group_name)
-        if not group:
-            group = self.doc.addObject("App::DocumentObjectGroup", self.preview_group_name)
-
-        # --- Draw or Update Grid ---
-        if grid_info:
-            grid_group_name = "preview_grid_lines"
-            grid_group = self.doc.getObject(grid_group_name)
-            if not grid_group:
-                grid_group = self.doc.addObject("App::DocumentObjectGroup", grid_group_name)
-                group.addObject(grid_group)
-                
-                # Draw grid lines for all sheets that might be used
-                max_sheets = 10 # Assume a max of 10 sheets for grid preview
-                for sheet_id in range(max_sheets):
-                    sheet_offset_x = sheet_id * (sheet_w + spacing)
-                    for r in range(grid_info['rows'] + 1):
-                        y = r * grid_info['cell_h']
-                        line = Part.makeLine((sheet_offset_x, y, 0), (sheet_offset_x + sheet_w, y, 0))
-                        line_obj = self.doc.addObject("Part::Feature", f"grid_h_{sheet_id}_{r}")
-                        line_obj.Shape = line
-                        grid_group.addObject(line_obj)
-                    for c in range(grid_info['cols'] + 1):
-                        x = c * grid_info['cell_w']
-                        line = Part.makeLine((sheet_offset_x + x, 0, 0), (sheet_offset_x + x, sheet_h, 0))
-                        line_obj = self.doc.addObject("Part::Feature", f"grid_v_{sheet_id}_{c}")
-                        line_obj.Shape = line
-                        grid_group.addObject(line_obj)
-
-        # --- Incremental Update for Moving Part ---
-        if moving_part:
-            # In animation, the dict has one entry: {sheet_id: [bounds...]}
-            # Use the explicitly passed current_sheet_id for the moving part.
-            # This ensures the part is drawn on the correct sheet.
-            sheet_id = current_sheet_id if current_sheet_id is not None else next(iter(sheet_layouts.keys()))
-            # This block now handles both CREATION and UPDATE of the moving part's preview
-            sheet_preview_group_name = f"preview_sheet_group_{sheet_id}"
-            sheet_group = self.doc.getObject(sheet_preview_group_name)
-
-            # --- Create Sheet Group and Boundary if it doesn't exist ---
-            if not sheet_group:
-                sheet_group = self.doc.addObject("App::DocumentObjectGroup", sheet_preview_group_name)
-                group.addObject(sheet_group)
-                sheet_offset_x = sheet_id * (sheet_w + spacing)
-                sheet_obj = self.doc.addObject("Part::Feature", f"preview_sheet_{sheet_id}")
-                sheet_obj.Shape = Part.makePlane(sheet_w, sheet_h)
-                sheet_obj.Placement = FreeCAD.Placement(FreeCAD.Vector(sheet_offset_x, 0, 0), FreeCAD.Rotation())
-                sheet_group.addObject(sheet_obj)
-                if FreeCAD.GuiUp: sheet_obj.ViewObject.Transparency = 75
-
-            moving_obj_name = f"preview_part_{moving_part.id}"
-            moving_obj = self.doc.getObject(moving_obj_name)
-            
-            sheet_offset_x = sheet_id * (sheet_w + spacing)
-            
-            if moving_part.shape_bounds.polygon and translate:
-                # Use shapely's translate function directly on the original polygon
-                translated_poly = translate(moving_part.shape_bounds.polygon, xoff=sheet_offset_x, yoff=0)
-                new_compound_wire = self._create_compound_wire_from_polygon(translated_poly)
-
-                if new_compound_wire:
-                    if not moving_obj:
-                        # Create the object for the first time
-                        moving_obj = self.doc.addObject("Part::Feature", moving_obj_name)
-                    
-                    # --- Ensure correct parenting ---
-                    if sheet_group not in moving_obj.InList:
-                        for parent_group in moving_obj.InList:
-                            parent_group.removeObject(moving_obj)
-                        sheet_group.addObject(moving_obj) # Add to the new, correct group
-
-                    moving_obj.Shape = new_compound_wire
-
-                self.doc.recompute()
-                if FreeCAD.GuiUp: FreeCAD.Gui.updateGui()
-                return # Exit early, no full redraw needed
-
-        # --- Full Redraw (for initial placement or non-animated updates) ---
-        for sheet_id, placed_parts_bounds in sorted(sheet_layouts.items()):
-            sheet_preview_group_name = f"preview_sheet_group_{sheet_id}"
-            sheet_group = self.doc.getObject(sheet_preview_group_name)
-            if not sheet_group:
-                sheet_group = self.doc.addObject("App::DocumentObjectGroup", sheet_preview_group_name)
-                group.addObject(sheet_group)
-
-                # Draw sheet boundary only when the group is first created
-                sheet_offset_x = sheet_id * (sheet_w + spacing)
-                sheet_obj = self.doc.addObject("Part::Feature", f"preview_sheet_{sheet_id}")
-                sheet_obj.Shape = Part.makePlane(sheet_w, sheet_h)
-                sheet_obj.Placement = FreeCAD.Placement(FreeCAD.Vector(sheet_offset_x, 0, 0), FreeCAD.Rotation())
-                sheet_group.addObject(sheet_obj)
-                if FreeCAD.GuiUp:
-                    sheet_obj.ViewObject.Transparency = 75
-
-            # Draw the newly placed part (which is the last one in the list)
-            if placed_parts_bounds:
-                part_bounds = placed_parts_bounds[-1]
-                # During a full redraw, there is no moving part, so we create a static ID.
-                # This was the source of the bug when animation logic fell through.
-                part_id = f"static_{sheet_id}_{len(placed_parts_bounds)-1}"
-                part_obj_name = f"preview_part_{part_id}"
-
-                if not self.doc.getObject(part_obj_name):
-                    sheet_offset_x = sheet_id * (sheet_w + spacing)
-                    if part_bounds.polygon and translate:
-                        # Use shapely's translate function directly on the original polygon
-                        translated_poly = translate(part_bounds.polygon, xoff=sheet_offset_x, yoff=0)
-                        
-                        bound_compound = self._create_compound_wire_from_polygon(translated_poly)
-                        bound_obj = self.doc.addObject("Part::Feature", part_obj_name)
-                        if bound_compound: bound_obj.Shape = bound_compound
-                        sheet_group.addObject(bound_obj)
-
-        self.doc.recompute()
-        if FreeCAD.GuiUp:
-            FreeCAD.Gui.updateGui()
+    @property
+    def doc(self):
+        return self.obj.Document
