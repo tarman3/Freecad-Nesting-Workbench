@@ -6,6 +6,7 @@ finding, stacking, and unstacking the generated sheet layouts.
 """
 
 import FreeCAD
+import ast
 
 class SheetStacker:
     """Handles the logic for finding, stacking, and unstacking sheet layouts."""
@@ -97,6 +98,23 @@ class SheetStacker:
             FreeCAD.Console.PrintError("Could not retrieve sheet parameters. Stacking aborted.\n")
             return
 
+        # Before any movement, store the current state of all objects in the layout.
+        # This ensures that unstacking will always restore to the state right before stacking.
+        if not hasattr(self.layout_group, "OriginalPlacements"):
+            self.layout_group.addProperty("App::PropertyMap", "OriginalPlacements", "Nesting")
+
+        placements_dict = {}
+        all_objects = self._get_all_objects_recursive(self.layout_group)
+        for obj in all_objects:
+            if not hasattr(obj, 'Placement'):
+                continue
+            # Store placement as a string representation of a tuple:
+            # (Base.x, Base.y, Base.z, Rotation.Q[0], Rotation.Q[1], Rotation.Q[2], Rotation.Q[3])
+            p = obj.Placement
+            placement_str = str((p.Base.x, p.Base.y, p.Base.z, p.Rotation.Q[0], p.Rotation.Q[1], p.Rotation.Q[2], p.Rotation.Q[3]))
+            placements_dict[obj.Name] = placement_str
+        self.layout_group.OriginalPlacements = placements_dict
+
         total_sheet_width = params["width"] + params["spacing"]
         sheet_groups = self._get_sheet_groups()
 
@@ -133,13 +151,19 @@ class SheetStacker:
         placements_dict = self.layout_group.OriginalPlacements
         all_objects = self._get_all_objects_recursive(self.layout_group)
         for obj in all_objects:
+            if not hasattr(obj, 'Placement'):
+                continue
             if obj.Name in placements_dict:
                 placement_str = placements_dict[obj.Name]
-                data = eval(placement_str)
+                try:
+                    # Use ast.literal_eval for safely evaluating the string representation of the tuple
+                    data = ast.literal_eval(placement_str)
+                except (ValueError, SyntaxError):
+                    FreeCAD.Console.PrintWarning(f"Could not parse placement data for '{obj.Name}'. Skipping.\n")
+                    continue
                 base = FreeCAD.Vector(data[0], data[1], data[2])
                 rot = FreeCAD.Rotation(data[3], data[4], data[5], data[6])
                 obj.Placement = FreeCAD.Placement(base, rot)
         
         self.layout_group.IsStacked = False
         FreeCAD.Console.PrintMessage("Sheets are now unstacked.\n")
-
