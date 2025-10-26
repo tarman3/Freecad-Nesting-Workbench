@@ -13,10 +13,10 @@ class PlacedPart:
     """
     def __init__(self, shape):
         self.shape = shape # The original Shape object
-        centroid = shape.get_centroid()
+        centroid = shape.centroid
         self.x = centroid.x if centroid else 0.0
         self.y = centroid.y if centroid else 0.0
-        self.angle = shape.get_angle()
+        self.angle = shape.angle
 
     def __repr__(self):
         return f"<PlacedPart: {self.shape.id}, pos=({self.x:.2f}, {self.y:.2f}), angle={self.angle}>"

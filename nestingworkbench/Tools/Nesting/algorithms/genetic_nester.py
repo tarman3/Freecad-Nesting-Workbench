@@ -22,7 +22,7 @@ class GeneticNester(BaseNester):
         self.mutation_rate = kwargs.get("mutation_rate", 0.1)
         self.elite_size = max(1, int(self.population_size * 0.1)) # Keep the top 10%
 
-    def nest(self, parts_to_place, update_callback=None):
+    def nest(self):
         """
         Main genetic algorithm loop.
         """
@@ -103,7 +103,7 @@ class GeneticNester(BaseNester):
         # Secondary component: bounding box area of the last sheet.
         last_sheet = sheets[-1]
         if last_sheet.parts:
-            all_polys = [p.shape.get_polygon() for p in last_sheet.parts]
+            all_polys = [p.shape.polygon for p in last_sheet.parts]
             bounds = unary_union(all_polys).bounds
             fitness += (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
 

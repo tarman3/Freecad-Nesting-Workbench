@@ -20,10 +20,7 @@ class NestingPanel(QtGui.QWidget):
         self.setWindowTitle("Nesting Tool")
         self.selected_shapes_to_process = []
         self.hidden_originals = []
-        self.preview_group_name = "__temp_Layout"
-        self.accepted = False
         self.selected_font_path = ""
-        self.hidden_layouts = []
         self.initUI()
         self.load_selection()
         self.set_default_font()
@@ -376,97 +373,3 @@ class NestingPanel(QtGui.QWidget):
         except Exception:
             # Silently fail, no default will be set.
             pass
-
-    def _recursive_delete(self, doc, obj_to_delete):
-        """Helper to recursively delete all objects inside a group."""
-        # Create a static list of children to iterate over
-        children = list(obj_to_delete.Group)
-        for child in children:
-            if child.isDerivedFrom("App::DocumentObjectGroup"):
-                self._recursive_delete(doc, child)
-            else:
-                try:
-                    doc.removeObject(child.Name)
-                except Exception:
-                    pass
-        # Finally, delete the (now empty) group itself
-        try:
-            doc.removeObject(obj_to_delete.Name)
-        except Exception:
-            pass
-            
-    def handle_accept(self):
-        """Finalizes the preview layout by renaming its Label to a permanent, unique name."""
-        self.accepted = True
-        doc = FreeCAD.ActiveDocument
-        if not doc: return
-
-        # First, restore visibility of any previously existing layouts
-        for obj in self.hidden_layouts:
-            try:
-                # Check if the object still exists in the document before accessing it
-                if obj in doc.Objects:
-                    obj.ViewObject.Visibility = True
-            except ReferenceError:
-                # This can happen if the user deleted a layout manually.
-                # It's safe to just ignore it.
-                pass
-        self.hidden_layouts.clear()
-
-        # Find the current preview group by looking for a label that STARTS with the temp name.
-        # This correctly finds the group even if FreeCAD auto-renamed it (e.g., to __temp_Layout001)
-        preview_group = None
-        for obj in doc.Objects:
-            if hasattr(obj, "Label") and obj.Label.startswith(self.preview_group_name):
-                preview_group = obj
-                break
-
-        if preview_group:
-            base_name, i = "Layout", 0
-            # Find the next available unique name for the final layout's LABEL.
-            # We must check against all object labels to ensure uniqueness.
-            existing_labels = [o.Label for o in doc.Objects]
-            while f"{base_name}_{i:03d}" in existing_labels:
-                i += 1
-            final_name = f"{base_name}_{i:03d}"
-            
-            # Simply rename the Label. This makes it "permanent" as far as our logic is concerned,
-            # because the cleanup function only deletes objects with the original temporary label.
-            preview_group.Label = final_name
-            
-            # Ensure the newly finalized group is visible
-            if hasattr(preview_group, "ViewObject"):
-                preview_group.ViewObject.Visibility = True
-        
-    def handle_cancel(self):
-        """Handles the cancellation of the nesting operation."""
-        self.accepted = False
-        doc = FreeCAD.ActiveDocument
-        if not doc: return
-
-        # Restore visibility of any previously existing layouts that were hidden
-        # Find and delete the temporary group that was being built.
-        temp_group = None
-        for obj in doc.Objects:
-            if hasattr(obj, "Label") and obj.Label.startswith(self.preview_group_name):
-                temp_group = obj
-                break
-        if temp_group: self._recursive_delete(doc, temp_group)
-
-        # Restore visibility of original shapes that were hidden
-        for obj in self.hidden_originals:
-            try:
-                if obj in doc.Objects:
-                    obj.ViewObject.Visibility = True
-            except ReferenceError:
-                pass
-        self.hidden_originals.clear()
-
-        # Restore visibility of other finalized layouts that were hidden by the initial cleanup_preview call.
-        for obj in self.hidden_layouts:
-            try:
-                if obj in doc.Objects:
-                    obj.ViewObject.Visibility = True
-            except ReferenceError:
-                pass
-        self.hidden_layouts.clear() # Clear the list after restoring visibility

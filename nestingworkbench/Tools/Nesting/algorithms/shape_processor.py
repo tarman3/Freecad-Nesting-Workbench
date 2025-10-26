@@ -15,8 +15,7 @@ def get_2d_profile_from_obj(obj):
     Extracts a usable 2D face profile from various FreeCAD object types,
     including sketches, bodies, and imported SVG geometry.
     """
-    shape = obj.Shape.copy()
-    shape.transformShape(obj.Placement.Matrix)
+    shape = obj.Shape
 
     # Case 1: PartDesign Body - Find the bottom-most planar face parallel to the XY plane
     if obj.isDerivedFrom("PartDesign::Body"):
@@ -66,13 +65,15 @@ def get_2d_profile_from_obj(obj):
     raise ValueError(f"Unsupported object '{obj.Label}' or no valid 2D geometry found.")
 
 
-def create_single_nesting_part(shape_obj, spacing, resolution=75):
+def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution=75):
     """
-    Creates one ShapeBounds boundary from a single FreeCAD object using Shapely.
-    The created boundary is normalized to be centered at the origin (0,0),
-    which simplifies placement calculations later in the process.
+    Processes a FreeCAD object to generate a shapely-based boundary and populates
+    the geometric properties of the provided Shape object. The created boundary is
+    normalized to be centered at the origin (0,0), which simplifies placement
+    calculations later.
+
+    :param shape_to_populate: The Shape object to populate with geometry.
     """
-    from ....datatypes.shape_bounds import ShapeBounds
     from ..nesting_logic import SHAPELY_AVAILABLE
     if not SHAPELY_AVAILABLE:
         raise ImportError("The shapely library is required for boundary creation but is not installed.")
@@ -161,10 +162,7 @@ def create_single_nesting_part(shape_obj, spacing, resolution=75):
     # It's the original geometry's centroid, adjusted by the offset that occurred
     # during buffering and re-centering. This ensures the final part rotates around
     # its true geometric center.
-    shape_bounds = ShapeBounds()
-    shape_bounds.polygon = final_buffered_polygon
-    shape_bounds.original_polygon = final_buffered_polygon
-    shape_bounds.unbuffered_polygon = final_unbuffered_polygon
-    shape_bounds.source_centroid = source_centroid + offset_from_origin
-    
-    return shape_bounds
+    shape_to_populate.polygon = final_buffered_polygon
+    shape_to_populate.original_polygon = final_buffered_polygon
+    shape_to_populate.unbuffered_polygon = final_unbuffered_polygon
+    shape_to_populate.source_centroid = source_centroid + offset_from_origin

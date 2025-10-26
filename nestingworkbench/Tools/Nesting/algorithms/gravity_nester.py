@@ -1,7 +1,7 @@
 import random
 import copy
 import math
-import pdb
+#import pdb
 from PySide import QtGui
 import FreeCAD
 from .base_nester import BaseNester
@@ -20,13 +20,36 @@ class GravityNester(BaseNester):
         self.max_spawn_count = kwargs.get("max_spawn_count", 100)
         self.max_nesting_steps = kwargs.get("max_nesting_steps", 500)
 
-    def _try_place_part_on_sheet(self, part_to_place, sheet, **kwargs):
+    def _spawn_part_on_sheet(self, shape, sheet):
+        """
+        Tries to place a shape at a random location without initial collision.
+        Returns the spawned shape on success, or None on failure.
+        """
+        for _ in range(self.max_spawn_count):
+            # The controller sets the definitive rotation_steps on the shape.
+            if shape.rotation_steps > 1:
+                angle = random.randrange(shape.rotation_steps) * (360 / shape.rotation_steps)
+                shape.set_rotation(angle)
+
+            _, _, w, h = shape.bounding_box()
+            
+            max_target_x = self._bin_width - w
+            max_target_y = self._bin_height - h
+            target_x = random.uniform(0, max_target_x) if max_target_x > 0 else 0
+            target_y = random.uniform(0, max_target_y) if max_target_y > 0 else 0
+
+            shape.move_to(target_x, target_y)
+
+            if sheet.is_placement_valid(shape):
+                return shape
+        return None
+
+    def _try_place_part_on_sheet(self, part_to_place, sheet):
         """
         Tries to place a single part on the given sheet using gravity simulation.
         Returns the placed part on success, None on failure.
         """
-        # Call the base class's spawn method directly. It handles finding a random, valid starting spot.
-        spawned_part = super()._try_spawn_part(part_to_place, sheet)
+        spawned_part = self._spawn_part_on_sheet(part_to_place, sheet)
         
         if spawned_part:
             if self.gravity_direction is None: # None indicates random direction
@@ -40,56 +63,50 @@ class GravityNester(BaseNester):
         else:
             return None
 
-    def _move_until_collision(self, part, sheet, direction):
-        """
-        Moves a part in the gravity direction step-by-step until it hits
-        the bin edge or another placed part.
-        """
-        can_shake = True # The part is allowed to shake on its first collision.
-
+    def _apply_gravity_to_part(self, part, sheet, direction):
+        """Helper to move a part in a given direction until it collides."""
         for _ in range(self.max_nesting_steps):
             # Record the last valid position's bottom-left corner
             last_valid_x, last_valid_y, _, _ = part.bounding_box()
             part.move(direction[0] * self.step_size, direction[1] * self.step_size)
             QtGui.QApplication.processEvents() # Force UI update for animation
-            # pdb.set_trace() # DEBUG: Uncomment to pause execution here
-
+            
             if not sheet.is_placement_valid(part, recalculate_union=False, part_to_ignore=part):
                 # Collision detected. Revert to the last valid position.
                 part.move_to(last_valid_x, last_valid_y)
+                break # Part has stopped moving.
 
-                if can_shake:
-                    # We are allowed to shake. Let's try it.
-                    can_shake = False # Disarm shaking until a successful gravity move.
-                    pre_shake_centroid = part.get_centroid()
-                    pre_shake_pos = (pre_shake_centroid.x, pre_shake_centroid.y) if pre_shake_centroid else (0, 0)
-                    new_pos = pre_shake_pos # Start with the current position
-                    
-                    # --- Step 1: Try rotation-only annealing --- (Pass the callback)
-                    rot_pos, rot_rot = self._anneal_part(part, sheet, direction, rotate_override=True, translate_override=False)
-                    
-                    # Check if rotation found a valid spot. If not, try translation.
-                    moved_distance_sq_rot = (rot_pos[0] - pre_shake_pos[0])**2 + (rot_pos[1] - pre_shake_pos[1])**2
-                    if math.isclose(moved_distance_sq_rot, 0.0):
-                        # --- Step 2: Try translation-only annealing --- (Pass the callback)
-                        new_pos, new_rot = self._anneal_part(part, sheet, direction, rotate_override=False, translate_override=True)
-                    else:
-                        new_pos = rot_pos
-
-                    # Check if the shake was successful (i.e., it moved a significant distance).
-                    moved_distance_sq = (new_pos[0] - pre_shake_pos[0])**2 + (new_pos[1] - pre_shake_pos[1])**2
-                    min_movement_threshold_sq = (self.step_size * 0.1)**2
-
-                    if not (math.isclose(moved_distance_sq, 0.0) or moved_distance_sq < min_movement_threshold_sq):
-                        continue # Shake was successful, continue the main loop to try another gravity move.
-                    else:
-                        break # Shake failed to move the part, so it's stuck.
-                else:
-                    # We collided, but we were not allowed to shake. This means we are stuck.
-                    break
-            else:
-                # The move in the gravity direction was successful.
-                # This means we can "re-arm" the ability to shake on the *next* collision.
-                can_shake = True
-
+    def _move_until_collision(self, part, sheet, direction):
+        """
+        Moves a part in the gravity direction step-by-step until it hits
+        the bin edge or another placed part.
+        If a collision occurs, it attempts to "shake" the part free once.
+        """
+        # --- Phase 1: Initial Gravity Movement ---
+        self._apply_gravity_to_part(part, sheet, direction)
+        
+        # --- Phase 2: Shake on Collision ---
+        # The part is now at its final resting place from gravity. Try to shake it.
+        pre_shake_centroid = part.centroid
+        pre_shake_pos = (pre_shake_centroid.x, pre_shake_centroid.y) if pre_shake_centroid else (0, 0)
+        
+        # --- Step 2a: Try rotation-only annealing ---
+        # We check the UI setting from the controller before attempting the rotation shake.
+        if self.anneal_rotate_enabled:
+            rot_pos, rot_rot = self._anneal_part(part, sheet, direction, rotate_enabled=True, translate_enabled=False)
+        else:
+            rot_pos = pre_shake_pos # If rotation is disabled, it didn't move.
+        
+        # Check if rotation found a valid spot. If not, try translation.
+        moved_distance_sq_rot = (rot_pos[0] - pre_shake_pos[0])**2 + (rot_pos[1] - pre_shake_pos[1])**2
+        if math.isclose(moved_distance_sq_rot, 0.0):
+            # --- Step 2b: Try translation-only annealing ---
+            # We check the UI setting from the controller before attempting the translation shake.
+            if self.anneal_translate_enabled:
+                self._anneal_part(part, sheet, direction, rotate_enabled=False, translate_enabled=True)
+        
+        # --- Phase 3: Final Gravity Movement ---
+        # After shaking, try one last gravity move to see if a new path opened up.
+        self._apply_gravity_to_part(part, sheet, direction)
+                
         return part

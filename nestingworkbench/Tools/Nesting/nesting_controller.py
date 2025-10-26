@@ -43,7 +43,6 @@ class NestingController:
     def __init__(self, ui_panel):
         self.ui = ui_panel
         self.doc = FreeCAD.ActiveDocument
-        self.preview_sheet_layouts = {} # Persistent state for preview
         self.last_run_sheets = [] # Store the result of the last nesting run
         self.last_run_ui_params = {} # Store the UI params from the last run
         self.last_run_unplaced_parts = [] # Store unplaced parts from the last run
@@ -113,20 +112,20 @@ class NestingController:
         for shape_wrapper in master_shape_wrappers:
             original_obj = shape_wrapper.source_freecad_object
             # Create a ShapeObject to store as the master, leaving the original untouched.
-            master_obj = create_shape_object(f"master_{original_obj.Label.replace('master_', '').replace('nested_', '')}")
+            master_obj = create_shape_object(f"master_{original_obj.Label}")
             
             # The shape_bounds.source_centroid contains the necessary offset to align
             # the shape with its origin-centered boundary polygon.
             shape_copy = original_obj.Shape.copy()
-            if shape_wrapper.shape_bounds and hasattr(shape_wrapper.shape_bounds, 'source_centroid') and shape_wrapper.shape_bounds.source_centroid:
-                shape_copy.translate(-shape_wrapper.shape_bounds.source_centroid) # This is the correct alignment logic.
+            if shape_wrapper.source_centroid:
+                shape_copy.translate(-shape_wrapper.source_centroid) # This is the correct alignment logic.
             master_obj.Shape = shape_copy
 
             master_shapes_group.addObject(master_obj)
 
             # Now, draw the bounds for this master shape and link them.
             # The bounds are drawn at the document origin (0,0,0) as they are just for reference.
-            if shape_wrapper.shape_bounds and shape_wrapper.shape_bounds.polygon:
+            if shape_wrapper.polygon:
                 # We pass the master_shapes_group to ensure the boundary object is added to it.
                 boundary_obj = shape_wrapper.draw_bounds(self.doc, FreeCAD.Vector(0,0,0), master_shapes_group)
                 if boundary_obj:
@@ -139,7 +138,7 @@ class NestingController:
 
             # --- Create Label for Master Shape ---
             if self.ui.add_labels_checkbox.isChecked() and Draft and self.ui.selected_font_path and hasattr(shape_wrapper, 'label_text') and shape_wrapper.label_text:
-                label_obj = self.doc.addObject("Part::Feature", f"label_master_{original_obj.Label.replace('master_', '')}")
+                label_obj = self.doc.addObject("Part::Feature", f"label_master_{original_obj.Label}")
                 
                 shapestring_geom = Draft.make_shapestring(
                     String=shape_wrapper.label_text,
@@ -172,7 +171,7 @@ class NestingController:
         layout_obj.addObject(parts_to_place_group)
         for part_instance in parts_to_nest:
             # Find the corresponding master object in the MasterShapes group
-            master_label = f"master_{part_instance.source_freecad_object.Label.replace('master_', '').replace('nested_', '')}"
+            master_label = f"master_{part_instance.source_freecad_object.Label}"
             master_obj = master_shapes_group.getObject(master_label)
             
             if master_obj:
@@ -222,11 +221,10 @@ class NestingController:
             algo_kwargs['generations'] = self.ui.genetic_generations_input.value()
             # Could add mutation rate to UI later if needed
 
-        self.preview_sheet_layouts.clear() # Reset preview state for new run
-
         # --- Prepare UI parameters for controllers ---
         global_rotation_steps = self.ui.rotation_steps_spinbox.value() # This widget is in NestingPanel
         self.last_run_ui_params = {
+            'spacing': spacing,
             'sheet_w': self.ui.sheet_width_input.value(),
             'sheet_h': self.ui.sheet_height_input.value(),
             'spacing': spacing,
@@ -235,6 +233,9 @@ class NestingController:
             'add_labels': self.ui.add_labels_checkbox.isChecked(),
             'label_height': self.ui.label_height_input.value(), # This widget is in NestingPanel
         }
+
+        # Add spacing to algo_kwargs so the nester can use it for sheet origin calculations
+        algo_kwargs['spacing'] = spacing
 
         try:
             sheets, remaining_parts_to_nest, total_steps = nest(
@@ -330,8 +331,8 @@ class NestingController:
         for label, master_obj in master_shapes_from_ui.items():
             try:
                 master_shape_instance = Shape(master_obj)
-                master_shape_instance.generate_bounds(shape_processor, spacing, boundary_resolution)
-                FreeCAD.Console.PrintMessage(f"Prepared master shape {label} with area {master_shape_instance.area()}\n") # DEBUG
+                shape_processor.create_single_nesting_part(master_shape_instance, master_obj, spacing, boundary_resolution)
+                FreeCAD.Console.PrintMessage(f"Prepared master shape {label} with area {master_shape_instance.area}\n") # DEBUG
                 master_shape_map[label] = master_shape_instance
             except Exception as e:
                 FreeCAD.Console.PrintError(f"Could not create boundary for '{master_obj.Label}', it will be skipped. Error: {e}\n")
@@ -354,7 +355,6 @@ class NestingController:
                 shape_instance.id = f"{shape_instance.source_freecad_object.Label}_{shape_instance.instance_num}"
                 shape_instance.rotation_steps = part_rotation_steps
                 shape_instance.fc_object = None # Initialize link to physical object as None
-                shape_instance.show_bounds = self.ui.show_bounds_checkbox.isChecked()
 
                 # Store the label text to be created later, not the FreeCAD object itself.
                 if add_labels and Draft and font_path:

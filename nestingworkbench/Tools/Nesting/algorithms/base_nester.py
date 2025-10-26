@@ -16,6 +16,7 @@ class BaseNester(object):
         self._bin_width = width
         self._bin_height = height
         self.rotation_steps = rotation_steps if rotation_steps > 0 else 1
+        self.spacing = kwargs.get("spacing", 0)
         self.max_spawn_count = kwargs.get("max_spawn_count", 100)
         self.anneal_steps = kwargs.get("anneal_steps", 100)
         self.step_size = kwargs.get("step_size", 5.0)
@@ -27,6 +28,25 @@ class BaseNester(object):
         self.sheets = []
         
         self._bin_polygon = Polygon([(0, 0), (width, 0), (width, height), (0, height)])
+
+    def _attempt_placement_on_sheet(self, part, sheet):
+        """
+        Attempts to place a part on a sheet, and if successful, finalizes
+        its placement and adds it to the sheet.
+        Returns True on success, False on failure.
+        """
+        placed_part_shape = self._try_place_part_on_sheet(part, sheet)
+        
+        # Final validation to ensure the returned part is valid before accepting it.
+        if placed_part_shape and sheet.is_placement_valid(placed_part_shape, recalculate_union=False):
+            sheet_origin = sheet.get_origin(self.spacing)
+            placed_part_shape.placement = placed_part_shape.get_final_placement(sheet_origin)
+            sheet.add_part(PlacedPart(placed_part_shape))
+            return True
+        elif placed_part_shape:
+            FreeCAD.Console.PrintWarning(f"Nester algorithm returned an invalid placement for {part.id}. Discarding.\n")
+        
+        return False
 
     def nest(self, parts):
         """
@@ -43,50 +63,21 @@ class BaseNester(object):
         while self.parts_to_place:
             original_shape = self.parts_to_place.pop(0) # Get and remove the largest remaining part
             placed = False
+            
             # Try to place on existing sheets first
-            for i, sheet in enumerate(self.sheets):
-                # The shape is already a unique copy from the controller.
-                # We can use it directly for the first placement attempt.
-                placed_part_shape = self._try_place_part_on_sheet(original_shape, sheet)
-                
-                # --- Safety Check ---
-                # Final validation to ensure the returned part is valid before accepting it.
-                if placed_part_shape and sheet.is_placement_valid(placed_part_shape, recalculate_union=False):
-                        # Set the final placement on the shape object, including the sheet's origin offset.
-                        sheet_origin = sheet.get_origin(self.parts_to_place[0].shape_bounds.polygon.buffer(0).area if self.parts_to_place else 0) # A bit of a hack to get spacing
-                        placed_part_shape.placement = placed_part_shape.get_final_placement(sheet_origin)
-
-                        sheet.add_part(PlacedPart(placed_part_shape))
-                        # Process UI events to keep FreeCAD responsive, especially during animation.
-                        QtGui.QApplication.processEvents()
-                        placed = True
-                        break
-                elif placed_part_shape:
-                    # The algorithm returned a shape, but it was invalid.
-                    FreeCAD.Console.PrintWarning(f"Nester algorithm returned an invalid placement for {original_shape.id}. Discarding.\n")
+            for sheet in self.sheets:
+                if self._attempt_placement_on_sheet(original_shape, sheet):
+                    placed = True
+                    break
             
             if not placed:
                 # If it didn't fit on any existing sheet, try a new one
                 new_sheet_id = len(self.sheets)
                 new_sheet = Sheet(new_sheet_id, self._bin_width, self._bin_height) # Create a new sheet
-                # The original_shape is used for the new sheet attempt.
-                placed_part_shape = self._try_place_part_on_sheet(original_shape, new_sheet)
                 
-                # --- Safety Check ---
-                if placed_part_shape and new_sheet.is_placement_valid(placed_part_shape):
-                        # Set the final placement on the shape object, including the sheet's origin offset.
-                        sheet_origin = new_sheet.get_origin(self.parts_to_place[0].shape_bounds.polygon.buffer(0).area if self.parts_to_place else 0)
-                        placed_part_shape.placement = placed_part_shape.get_final_placement(sheet_origin)
-
-                        new_sheet.add_part(PlacedPart(placed_part_shape))
-                        self.sheets.append(new_sheet)
-                        # Process UI events to keep FreeCAD responsive, especially during animation.
-                        QtGui.QApplication.processEvents()
-                        placed = True
-                elif placed_part_shape:
-                    # The algorithm returned a shape, but it was invalid for a new sheet.
-                    FreeCAD.Console.PrintWarning(f"Nester algorithm returned an invalid placement for {original_shape.id} on a new sheet. Discarding.\n")
-                    unplaced_shapes.append(original_shape)
+                if self._attempt_placement_on_sheet(original_shape, new_sheet):
+                    self.sheets.append(new_sheet)
+                    placed = True
                 else:
                     # If it can't even fit on an empty sheet, it's unplaceable
                     unplaced_shapes.append(original_shape)
@@ -96,33 +87,7 @@ class BaseNester(object):
 
     def _sort_parts_by_area(self):
         """Sorts the list of parts to be nested in-place, largest area first."""
-        self.parts_to_place.sort(key=lambda p: p.area(), reverse=True)
-
-    def _try_spawn_part(self, shape, sheet):
-        """
-        Tries to place a shape at a random location without initial collision.
-        Returns the spawned shape on success, or None on failure.
-        """
-        for _ in range(self.max_spawn_count):
-            # The controller sets the definitive rotation_steps on the shape.
-            if shape.rotation_steps > 1:
-                angle = random.randrange(shape.rotation_steps) * (360 / shape.rotation_steps)
-                shape.set_rotation(angle)
-
-            part_min_x, part_min_y, w, h = shape.bounding_box()
-            
-            max_target_x = self._bin_width - w
-            max_target_y = self._bin_height - h
-            target_x = random.uniform(0, max_target_x) if max_target_x > 0 else 0
-            target_y = random.uniform(0, max_target_y) if max_target_y > 0 else 0
-
-            # The move_to method is more direct here
-            shape.move_to(target_x, target_y)
-
-            if sheet.is_placement_valid(shape):
-                return shape
-
-        return None
+        self.parts_to_place.sort(key=lambda p: p.area, reverse=True)
 
     def _try_place_part_on_sheet(self, part_to_place, sheet):
         """
@@ -131,7 +96,7 @@ class BaseNester(object):
         """
         raise NotImplementedError
 
-    def _anneal_part(self, part_to_shake, sheet, current_gravity_direction, rotate_enabled=True, translate_enabled=True, rotate_override=None, translate_override=None):
+    def _anneal_part(self, part_to_shake, sheet, current_gravity_direction, rotate_enabled=True, translate_enabled=True):
         """
         Attempts to "anneal" a shape out of a collision by trying small
         perpendicular and/or rotational movements. This is a local search
@@ -140,17 +105,17 @@ class BaseNester(object):
         a valid position, it returns the starting position and rotation.
         """
 
-        start_centroid = part_to_shake.get_centroid()
+        start_centroid = part_to_shake.centroid
         start_pos = (start_centroid.x, start_centroid.y) if start_centroid else (0, 0)
-        start_rot = part_to_shake.get_angle() # This is the angle to return if shaking fails
+        start_rot = part_to_shake.angle # This is the angle to return if shaking fails
 
         # If no annealing steps are configured or both rotate and translate are disabled, return immediately.
-        if self.anneal_steps == 0 or (not rotate_enabled and not translate_enabled):
+        if self.anneal_steps == 0 or (not self.anneal_rotate_enabled and not self.anneal_translate_enabled) or (not rotate_enabled and not translate_enabled):
             return start_pos, start_rot
 
         # Store the initial state of the part.
         initial_bl_x, initial_bl_y, _, _ = part_to_shake.bounding_box()
-        initial_angle = part_to_shake.get_angle()
+        initial_angle = part_to_shake.angle
 
         # Determine the base perpendicular direction (relative to the current gravity)
         base_perp_dir = (-current_gravity_direction[1], current_gravity_direction[0])
@@ -167,7 +132,7 @@ class BaseNester(object):
             part_to_shake.set_rotation(initial_angle) # Order matters: move then rotate
             
             # Apply rotation if enabled
-            if rotate_enabled and part_to_shake.rotation_steps > 1:
+            if self.anneal_rotate_enabled and rotate_enabled and part_to_shake.rotation_steps > 1:
                 # Oscillate the rotation similar to translation
                 angle_step_magnitude = (360.0 / part_to_shake.rotation_steps) * (i // 2 + 1)
                 
@@ -179,7 +144,7 @@ class BaseNester(object):
 
             # Determine the perpendicular direction for this specific anneal attempt
             perp_dir_for_shake = (0, 0) # Default to no movement
-            if translate_enabled:
+            if self.anneal_translate_enabled and translate_enabled:
                 if self.anneal_random_shake_direction:
                     # Generate a completely random direction for this shake attempt
                     random_angle_rad = random.uniform(0, 2 * math.pi)
@@ -194,9 +159,9 @@ class BaseNester(object):
             
             if sheet.is_placement_valid(part_to_shake, recalculate_union=False, part_to_ignore=part_to_shake):
                 # Found a valid position. Return its current centroid and angle.
-                new_centroid = part_to_shake.get_centroid()
+                new_centroid = part_to_shake.centroid
                 new_pos = (new_centroid.x, new_centroid.y) if new_centroid else (0, 0)
-                return new_pos, part_to_shake.get_angle()
+                return new_pos, part_to_shake.angle
             # If invalid, the loop will continue, and the next iteration will reset the part.
 
         # If the loop finishes, no valid shake was found.

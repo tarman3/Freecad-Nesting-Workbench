@@ -9,7 +9,6 @@ from PySide import QtGui
 
 import FreeCAD
 from ....datatypes.sheet import Sheet
-from ....datatypes.shape_bounds import ShapeBounds
 from .base_nester import BaseNester
 
 class MinkowskiNester(BaseNester):
@@ -20,15 +19,7 @@ class MinkowskiNester(BaseNester):
         self._decomposition_cache = {} # Cache for polygon decomposition results
         self._nfp_cache = {} # Cache for No-Fit Polygons between master shapes
 
-    def nest(self, parts_to_place, update_callback=None):
-        """
-        The Minkowski nester now uses on-demand caching. The pre-calculation
-        step is removed, and NFPs are calculated and cached as they are needed
-        during the placement process.
-        """
-        return super().nest(parts_to_place, update_callback)
-
-    def _try_place_part_on_sheet(self, part_to_place, sheet, **kwargs):
+    def _try_place_part_on_sheet(self, part_to_place, sheet):
         """
         Tries to place a single shape on a given sheet using Minkowski sums.
         Returns the placed shape on success, None on failure.
@@ -41,26 +32,9 @@ class MinkowskiNester(BaseNester):
         for i in range(part_to_place.rotation_steps):
             angle = i * (360.0 / part_to_place.rotation_steps) if part_to_place.rotation_steps > 1 else 0.0
             # We don't move the part itself, we just get its polygon at the target rotation
-            rotated_part_poly = rotate(part_to_place.shape_bounds.original_polygon, angle, origin='centroid')
+            rotated_part_poly = rotate(part_to_place.original_polygon, angle, origin='centroid')
 
             FreeCAD.Console.PrintMessage(f"MINKOWSKI:  - Trying rotation {angle:.1f} degrees.\n")
-
-            if not sheet.parts:
-                FreeCAD.Console.PrintMessage("MINKOWSKI: Sheet is empty, placing first part in corner.\n")
-                # For the first part, just place it at the origin (bottom-left corner).
-                # This is more deterministic and better for packing than random placement.
-                part_to_place.move_to(0, 0)
-                part_to_place.set_rotation(angle)
-
-                # We must check if the part actually fits at the origin at the current rotation.
-                if sheet.is_placement_valid(part_to_place):
-                    QtGui.QApplication.processEvents() # Animate the placement
-                    return part_to_place
-                else:
-                    # If it doesn't fit at the origin (e.g., a large part at a weird angle),
-                    # fall back to the random spawn logic to find a fit.
-                    FreeCAD.Console.PrintMessage("MINKOWSKI: First part did not fit at origin, falling back to spawn.\n")
-                    return super()._try_spawn_part(part_to_place, sheet, update_callback)
 
             # 1. Compute the individual No-Fit Polygons (NFPs).
             individual_nfps = []
@@ -75,8 +49,8 @@ class MinkowskiNester(BaseNester):
                 if master_nfp is None:
                     # Cache miss. Calculate the NFP now and store it.
                     FreeCAD.Console.PrintMessage(f"MINKOWSKI: Calculating NFP: {placed_part_master_label} @ {placed_part_angle:.1f} vs {part_to_place_master_label} @ {angle:.1f}\n")
-                    placed_part_master_poly = placed_part.shape.shape_bounds.original_polygon
-                    part_to_place_master_poly = part_to_place.shape_bounds.original_polygon
+                    placed_part_master_poly = placed_part.shape.original_polygon
+                    part_to_place_master_poly = part_to_place.original_polygon
                     
                     master_nfp = self._calculate_and_cache_nfp(
                         placed_part_master_poly, placed_part_angle, 
@@ -86,7 +60,7 @@ class MinkowskiNester(BaseNester):
                 if master_nfp:
                     # The NFP's reference point is the sum of the reference points.
                     # We translate it by the placed part's centroid to position it correctly on the sheet.
-                    placed_part_centroid = placed_part.shape.get_centroid()
+                    placed_part_centroid = placed_part.shape.centroid
                     translated_nfp = translate(master_nfp, xoff=placed_part_centroid.x, yoff=placed_part_centroid.y)
                     individual_nfps.append(translated_nfp)
 
@@ -128,11 +102,10 @@ class MinkowskiNester(BaseNester):
             part_to_place.set_rotation(best_angle)
             
             # Move the part so its centroid is at the best found (x, y) point.
-            current_centroid = part_to_place.get_centroid()
+            current_centroid = part_to_place.centroid
             dx = best_x - current_centroid.x
             dy = best_y - current_centroid.y
             part_to_place.move(dx, dy)
-            QtGui.QApplication.processEvents()
 
             return part_to_place
 

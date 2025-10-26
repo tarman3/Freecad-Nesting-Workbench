@@ -82,11 +82,11 @@ class Sheet:
 
         total_part_area = 0
         for part in self.parts:
-            if part.shape and part.shape.shape_bounds:
-                if use_unbuffered_area and part.shape.shape_bounds.unbuffered_polygon:
-                    total_part_area += part.shape.shape_bounds.unbuffered_polygon.area
-                elif part.shape.shape_bounds.polygon: # Fallback to buffered
-                    total_part_area += part.shape.shape_bounds.polygon.area
+            if part.shape:
+                if use_unbuffered_area and part.shape.unbuffered_polygon:
+                    total_part_area += part.shape.unbuffered_polygon.area
+                elif part.shape.polygon: # Fallback to buffered
+                    total_part_area += part.shape.polygon.area
         
         return (total_part_area / sheet_area) * 100.0
 
@@ -96,8 +96,8 @@ class Sheet:
             polygons_to_union = []
             for p in self.parts:
                 # Exclude the part to ignore from the union calculation
-                if p.shape != part_to_ignore and p.shape and p.shape.shape_bounds and p.shape.shape_bounds.polygon:
-                    polygons_to_union.append(p.shape.shape_bounds.polygon)
+                if p.shape != part_to_ignore and p.shape and p.shape.polygon:
+                    polygons_to_union.append(p.shape.polygon)
             self._union_of_placed_parts = unary_union(polygons_to_union) if polygons_to_union else None
             self._union_is_dirty = False
         return self._union_of_placed_parts
@@ -116,11 +116,11 @@ class Sheet:
             bool: True if the placement is valid, False otherwise.
         """
         if not SHAPELY_AVAILABLE: return False
-        if not shape_to_check.shape_bounds or not shape_to_check.shape_bounds.polygon: return False
+        if not shape_to_check.polygon: return False
 
         # 1. Check containment within sheet boundaries
         bin_polygon = Polygon([(0, 0), (self.width, 0), (self.width, self.height), (0, self.height)])
-        if not bin_polygon.contains(shape_to_check.shape_bounds.polygon):
+        if not bin_polygon.contains(shape_to_check.polygon):
             return False
 
         union_of_placed_parts = self.get_union_of_placed_parts(force_recalculate=False, part_to_ignore=part_to_ignore)
@@ -129,7 +129,7 @@ class Sheet:
         if union_of_placed_parts is None or union_of_placed_parts.is_empty:
             return True # No parts to collide with
 
-        return not shape_to_check.shape_bounds.polygon.intersects(union_of_placed_parts)
+        return not shape_to_check.polygon.intersects(union_of_placed_parts)
 
     def is_placement_valid_polygon(self, polygon_to_check, recalculate_union=False, part_to_ignore=None):
         """
@@ -247,27 +247,3 @@ class Sheet:
                     text_group.addObject(label_obj)
                     shape_obj.LabelObject = label_obj # Link to property
                     label_obj.ViewObject.Visibility = shape_obj.ShowLabel # Set initial visibility
-
-            # --- DEBUG: Draw Centroids ---
-            # Draw a red dot at the boundary's centroid
-            if shape.shape_bounds and shape.shape_bounds.polygon:
-                bounds_centroid_shapely = shape.shape_bounds.polygon.centroid
-                bounds_centroid_fc = FreeCAD.Vector(bounds_centroid_shapely.x, bounds_centroid_shapely.y, 0)
-                
-                red_dot_obj = doc.addObject("Part::Feature", f"debug_bounds_centroid_{shape.id}")
-                red_dot_obj.Shape = Part.Vertex(bounds_centroid_fc)
-                red_dot_obj.Placement = FreeCAD.Placement(sheet_origin, FreeCAD.Rotation())
-                shapes_group.addObject(red_dot_obj)
-                if FreeCAD.GuiUp:
-                    red_dot_obj.ViewObject.PointColor = (1.0, 0.0, 0.0) # Red
-                    red_dot_obj.ViewObject.PointSize = 8
-
-            # Draw a green dot at the final placed shape's centroid
-            if shape_obj:
-                green_dot_obj = doc.addObject("Part::Feature", f"debug_shape_centroid_{shape.id}")
-                green_dot_obj.Shape = Part.Vertex(shape_obj.Shape.CenterOfMass)
-                green_dot_obj.Placement = final_placement # Use the same final placement as the shape
-                shapes_group.addObject(green_dot_obj)
-                if FreeCAD.GuiUp:
-                    green_dot_obj.ViewObject.PointColor = (0.0, 1.0, 0.0) # Green
-                    green_dot_obj.ViewObject.PointSize = 8

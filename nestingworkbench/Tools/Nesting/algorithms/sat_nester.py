@@ -10,7 +10,7 @@ class SatNester(BaseNester):
     the best position along the boundary of the combined shape of already placed parts.
     """
 
-    def _try_place_part_on_sheet(self, part_to_place, sheet, update_callback=None):
+    def _try_place_part_on_sheet(self, part_to_place, sheet):
         """
         Tries to place a single part on the given sheet using an SAT-based strategy.
         It finds the best position by "sliding" the part along existing boundaries.
@@ -25,7 +25,7 @@ class SatNester(BaseNester):
         for i in range(num_rotations):
             angle = i * (360.0 / num_rotations) if num_rotations > 1 else 0.0
             part_to_place.set_rotation(angle)
-            rotated_part_poly = part_to_place.get_polygon()
+            rotated_part_poly = part_to_place.polygon
 
             if not sheet.parts:
                 # For the first part, place it at the origin.
@@ -85,12 +85,12 @@ class SatNester(BaseNester):
         A fast collision check using the Separating Axis Theorem.
         This assumes all polygons are convex.
         """
-        part_poly = part_to_check.get_polygon()
+        part_poly = part_to_check.polygon
         if not self._bin_polygon.contains(part_poly):
             return False
 
         for placed in sheet.parts:
-            placed_poly = placed.shape.get_polygon()
+            placed_poly = placed.shape.polygon
             if self._check_collision_sat(part_poly, placed_poly):
                 return False
         return True
