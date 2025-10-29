@@ -125,11 +125,9 @@ class NestingController:
             master_obj = create_shape_object(f"master_{original_obj.Label}")
             master_obj_map[id(original_obj)] = master_obj
             
-            # The shape_bounds.source_centroid contains the necessary offset to align
-            # the shape with its origin-centered boundary polygon.
+            # The shape is not translated here anymore. The alignment will be handled
+            # during the final drawing phase by setting a relative placement inside a container.
             shape_copy = original_obj.Shape.copy()
-            if shape_wrapper.source_centroid:
-                shape_copy.translate(-shape_wrapper.source_centroid) # This is the correct alignment logic.
             master_obj.Shape = shape_copy
 
             master_shapes_group.addObject(master_obj)

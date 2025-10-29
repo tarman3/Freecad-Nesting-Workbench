@@ -142,11 +142,11 @@ class Shape:
         # The final target position for the shape's source_centroid.
         target_centroid_pos = sheet_origin + nested_centroid
 
-        # The source_centroid is the correct pivot point.
-        # It represents the original geometry's centroid, adjusted by the offset that
-        # occurred during the buffering and re-centering process. This ensures the
-        # final FreeCAD part rotates around the same conceptual center as its shapely polygon.
-        center = self.source_centroid if self.source_centroid else FreeCAD.Vector(0, 0, 0)
+        # The master shape's geometry has already been translated so that its original
+        # source_centroid is at the origin. Therefore, the center of rotation for
+        # the final placement must also be the origin. Using the original source_centroid
+        # here would apply a double correction and result in an offset.
+        center = FreeCAD.Vector(0, 0, 0)
 
         # Create the final placement.
         return FreeCAD.Placement(target_centroid_pos, rotation, center)

@@ -198,57 +198,58 @@ class Sheet:
             shape_obj = shape.fc_object
             if shape_obj:
                 FreeCAD.Console.PrintMessage(f"DEBUG:     fc_object '{shape_obj.Label}' found. Proceeding with drawing.\n")
-                # This is the correct logic: find the existing object, rename it, and move it.
-                shape_obj.Label = f"nested_{shape.id}"
-                shapes_group.addObject(shape_obj)
 
-                # CRITICAL: Apply the final calculated placement to the FreeCAD object.
-                shape_obj.Placement = final_placement
+                # Create a container to hold the part and its bounds, which will be rotated.
+                container = doc.addObject("App::Part", f"nested_{shape.id}")
+                shapes_group.addObject(container)
 
-                # Set initial visibility from UI params, which will also set the ShowShape property
+                # Place the boundary object at the container's origin. It is the reference.
+                boundary_obj = shape_obj.BoundaryObject
+                if boundary_obj:
+                    boundary_obj.Placement = FreeCAD.Placement()
+                    container.addObject(boundary_obj)
+
+                # Place the shape object inside the container, offsetting it by -source_centroid
+                # to align it with the boundary object.
+                if shape.source_centroid:
+                    shape_obj.Placement = FreeCAD.Placement(shape.source_centroid.negative(), FreeCAD.Rotation())
+                else:
+                    shape_obj.Placement = FreeCAD.Placement()
+                container.addObject(shape_obj)
+
+                # Apply the final nesting placement to the CONTAINER.
+                # All objects within it (shape, bounds) will be transformed together.
+                container.Placement = final_placement
+                FreeCAD.Console.PrintMessage(f"DEBUG: PLACEMENT for '{container.Label}': {container.Placement}")
+
+                # --- Handle the label object AFTER the container is placed ---
+                # This ensures the label is not affected by the container's rotation
+                # and its world position can be calculated accurately.
+                if ui_params.get('add_labels', False) and Draft and ui_params.get('font_path') and hasattr(shape, 'label_text') and shape.label_text:
+                    label_obj = create_label_object(f"label_{shape.id}")
+                    shapestring_geom = Draft.make_shapestring(String=shape.label_text, FontFile=ui_params['font_path'], Size=ui_params.get('spacing', 0) * 0.6)
+                    label_obj.Shape = shapestring_geom.Shape
+                    doc.removeObject(shapestring_geom.Name)
+                    
+                    shapestring_center = label_obj.Shape.BoundBox.Center
+                    
+                    # The pivot point of the aligned shape in world coordinates is the base of the container's final placement.
+                    final_part_center = container.Placement.Base
+                    
+                    # We will center the label on this point, adding the Z offset from the UI.
+                    target_label_center = final_part_center + FreeCAD.Vector(0, 0, ui_params.get('label_height', 0.1))
+                    
+                    # The label should not rotate, so its placement is a simple translation.
+                    label_placement_base = target_label_center - shapestring_center
+                    label_obj.Placement = FreeCAD.Placement(label_placement_base, FreeCAD.Rotation()) # No rotation
+                    
+                    # Add the label to the dedicated, non-rotated text_group
+                    text_group.addObject(label_obj)
+                    shape_obj.LabelObject = label_obj
+
+                # Set visibility on the main shape object
                 shape_obj.ShowShape = True
                 shape_obj.ShowBounds = ui_params.get('show_bounds', False)
                 shape_obj.ShowLabel = ui_params.get('add_labels', False)
-
-                boundary_obj = shape_obj.BoundaryObject
-                if boundary_obj:
-                    shapes_group.addObject(boundary_obj)
-                    # The ShapeObject's onChanged logic will handle visibility based on the
-                    # ShowBounds property that was set a few lines above.
-                    if hasattr(boundary_obj, "ViewObject"):
-                        # CRITICAL: Also apply the final placement to the boundary object.
-                        boundary_obj.Placement = final_placement
-                        boundary_obj.ViewObject.Visibility = shape_obj.ShowBounds
-                        
-                if ui_params.get('add_labels', False) and Draft and ui_params.get('font_path') and hasattr(shape, 'label_text') and shape.label_text:
-                    # Create the Draft.ShapeString object here, just before drawing.
-                    label_obj = create_label_object(f"label_{shape.id}")
-
-                    # Create the underlying ShapeString geometry
-                    shapestring_geom = Draft.make_shapestring(
-                        String=shape.label_text,
-                        FontFile=ui_params['font_path'],
-                        Size=ui_params.get('spacing', 0) * 0.6 # Use spacing from ui_params
-                    )
-                    label_obj.Shape = shapestring_geom.Shape
-                    doc.removeObject(shapestring_geom.Name) # Remove the temporary Draft object
-                    shapestring_bb = label_obj.Shape.BoundBox
-                    shapestring_center = shapestring_bb.Center
-
-                    # The final center of the part is the center of its bounding box after placement.
-                    # We use the shape_obj which has the final placement applied.
-                    final_part_center = shape_obj.Shape.BoundBox.transformed(shape_obj.Placement.Matrix).Center
-
-                    # Add a small Z-offset to ensure the label is drawn on top of the part.
-                    final_part_center.z += ui_params.get('label_height', 0.1)
-                    
-                    # Create a new placement for the label.
-                    # The placement should position the label's center at final_part_center.
-                    label_placement_base = final_part_center - shapestring_center
-                    label_obj.Placement = FreeCAD.Placement(label_placement_base, FreeCAD.Rotation())
-                    
-                    text_group.addObject(label_obj)
-                    shape_obj.LabelObject = label_obj # Link to property
-                    label_obj.ViewObject.Visibility = shape_obj.ShowLabel # Set initial visibility
             else:
                 FreeCAD.Console.PrintWarning(f"DEBUG:     fc_object for part '{shape.id}' was None. Skipping drawing.\n")
