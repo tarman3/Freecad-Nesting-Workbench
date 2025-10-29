@@ -254,13 +254,27 @@ class NestingController:
             FreeCAD.Console.PrintMessage(f"DEBUG:   Part '{part.id}' (id={id(part)}). fc_object is {'set' if part.fc_object else 'None'}.\n")
         FreeCAD.Console.PrintMessage(f"DEBUG: ---------------------------------------------------- \n")
 
+        is_simulating = self.ui.simulate_nesting_checkbox.isChecked()
+
         try:
             sheets, remaining_parts_to_nest, total_steps = nest(
                 parts_to_nest,
                 self.ui.sheet_width_input.value(), self.ui.sheet_height_input.value(),
-                global_rotation_steps, algorithm, self.ui.simulate_nesting_checkbox.isChecked(),
+                global_rotation_steps, algorithm, is_simulating,
                 **algo_kwargs
             )
+
+            # If not simulating, the `sheets` object contains deep copies of the parts.
+            # We must replace these copies with the original parts that are linked to the
+            # FreeCAD objects, and transfer the final placement data.
+            if not is_simulating:
+                original_parts_map = {part.id: part for part in parts_to_nest}
+                for sheet in sheets:
+                    for i, placed_part in enumerate(sheet.parts):
+                        sheet_origin = sheet.get_origin() # Get the origin for the current sheet
+                        original_part = original_parts_map[placed_part.shape.id]
+                        original_part.placement = placed_part.shape.get_final_placement(sheet_origin)
+                        sheet.parts[i].shape = original_part # Replace the copied shape with the original
         except NestingDependencyError as e:
             self.ui.status_label.setText(f"Error: {e}")
             # The dialog is already shown by nesting_logic, so we just stop.
