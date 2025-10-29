@@ -103,99 +103,22 @@ class NestingController:
         # Ensure the new layout group is visible by default.
         if FreeCAD.GuiUp and hasattr(layout_obj, "ViewObject"): layout_obj.ViewObject.Visibility = True
 
+        # --- Create a temporary, visible group for the parts to be placed ---
+        # This must be created BEFORE calling _prepare_parts_from_ui.
+        parts_to_place_group = self.doc.addObject("App::DocumentObjectGroup", "PartsToPlace")
+        layout_obj.addObject(parts_to_place_group)
+
         # --- Prepare Parts and Master Shapes ---
-        # This creates the in-memory representations of the parts to be nested
-        # and the master shapes that will be drawn.
-        parts_to_nest, master_shape_wrappers = self._prepare_parts_from_ui(self.ui.part_spacing_input.value(), self.ui.boundary_resolution_input.value())
+        parts_to_nest = self._prepare_parts_from_ui(
+            self.ui.part_spacing_input.value(),
+            self.ui.boundary_resolution_input.value(),
+            layout_obj # Pass the layout group to add master shapes to.
+        )
 
         if not parts_to_nest:
             self.ui.status_label.setText("Error: No valid parts to nest.")
+            self.doc.removeObject(layout_obj.Name) # Clean up the empty layout group
             return
-
-        # --- Create the hidden MasterShapes group directly, before nesting ---
-        master_shapes_group = self.doc.addObject("App::DocumentObjectGroup", "MasterShapes")
-        layout_obj.addObject(master_shapes_group)
-
-        # This map is crucial for robustly linking shape instances to their masters,
-        # avoiding reliance on potentially non-unique or stale labels.
-        master_obj_map = {}
-        for shape_wrapper in master_shape_wrappers:
-            original_obj = shape_wrapper.source_freecad_object
-
-            # Create a container for the master shape, mirroring the final nested part structure.
-            master_container = self.doc.addObject("App::Part", f"master_{original_obj.Label}")
-            master_obj_map[id(original_obj)] = master_container
-            master_shapes_group.addObject(master_container)
-
-            # Create the master ShapeObject that will live inside the container.
-            master_shape_obj = create_shape_object(f"master_shape_{original_obj.Label}")
-            shape_copy = original_obj.Shape.copy()
-            master_shape_obj.Shape = shape_copy
-            
-            # The shape object is placed inside the container, offset by its centroid.
-            # This aligns its geometry's reference point (the centroid) with the container's origin.
-            if shape_wrapper.source_centroid:
-                master_shape_obj.Placement = FreeCAD.Placement(shape_wrapper.source_centroid.negative(), FreeCAD.Rotation())
-            else:
-                master_shape_obj.Placement = FreeCAD.Placement()
-            master_container.addObject(master_shape_obj)
-
-            # Now, draw the bounds for this master shape and link them.
-            # The bounds are drawn at the document origin and placed inside the container without any offset.
-            if shape_wrapper.polygon:
-                # We pass the master_container as the group to add the boundary to.
-                boundary_obj = shape_wrapper.draw_bounds(self.doc, FreeCAD.Vector(0,0,0), master_shapes_group)
-                if boundary_obj:
-                    master_container.addObject(boundary_obj) # Add the bounds to the container
-                    boundary_obj.Placement = FreeCAD.Placement() # Place at container origin
-                    master_shape_obj.BoundaryObject = boundary_obj # Link it to the shape object
-                    master_shape_obj.ShowBounds = False # Master shape bounds should always be off by default.
-                    if hasattr(boundary_obj, "ViewObject"):
-                        boundary_obj.ViewObject.Visibility = False
-
-            # --- Create Label for Master Shape ---
-            if self.ui.add_labels_checkbox.isChecked() and Draft and self.ui.selected_font_path and hasattr(shape_wrapper, 'label_text') and shape_wrapper.label_text:
-                # The logic for creating labels for the final parts is complex and tied to final placement.
-                # Since master shapes are hidden and just templates, we can skip adding a label object
-                # to them to simplify the structure. The label text is still stored on the in-memory
-                # `shape_wrapper` and will be used when drawing the final nested parts.
-                pass
-        
-        # Hide the group itself
-        if FreeCAD.GuiUp and hasattr(master_shapes_group, "ViewObject"):
-            master_shapes_group.ViewObject.Visibility = False
-        # self.doc.recompute() # This is not needed as we are just creating simple objects. The final recompute will handle everything.
-
-        # --- Create a temporary, visible group of the parts to be placed for debugging ---
-        parts_to_place_group = self.doc.addObject("App::DocumentObjectGroup", "PartsToPlace")
-        layout_obj.addObject(parts_to_place_group)
-        FreeCAD.Console.PrintMessage(f"DEBUG: --- Linking FreeCAD objects to in-memory Shape objects --- \n")
-        for part_instance in parts_to_nest:
-            # Find the corresponding master object using the robust map.
-            original_obj_id = id(part_instance.source_freecad_object)
-            master_container = master_obj_map.get(original_obj_id)
-            
-            if master_container:
-                # Create a copy of the master shape and its boundary for this instance
-                FreeCAD.Console.PrintMessage(f"DEBUG: Creating copy for Shape '{part_instance.id}' (id={id(part_instance)}). Master container: '{master_container.Label}'\n")
-                
-                # Find the actual ShapeObject inside the master container to link to the part instance.
-                master_shape_obj = next((child for child in master_container.Group if hasattr(child, "Proxy") and child.Proxy.__class__.__name__ == "ShapeObject"), None)
-                if not master_shape_obj: continue
-
-                # Create a copy of the master ShapeObject for this instance.
-                part_copy = self.doc.copyObject(master_shape_obj, True) # Deep copy to get linked objects like bounds
-                part_copy.Label = f"part_{part_instance.id}" # This is the ShapeObject
-                parts_to_place_group.addObject(part_copy) # Add the copy to the transient group
-
-                # Link the physical FreeCAD object back to the in-memory Shape object.
-                part_instance.fc_object = part_copy
-                FreeCAD.Console.PrintMessage(f"DEBUG:   Shape '{part_instance.id}' (id={id(part_instance)}) linked to FreeCAD object '{part_copy.Label}' (id={id(part_copy)}). fc_object is now {'set' if part_instance.fc_object else 'None'}.\n")
-
-                # For simulation, we want to see the bounds, not the shape.
-                # Set these properties on the temporary copy.
-                part_copy.ShowBounds = True
-                part_copy.ShowShape = False
         
         self.ui.status_label.setText("Running nesting algorithm...")
         spacing = self.ui.part_spacing_input.value()
@@ -332,7 +255,7 @@ class NestingController:
         if toggled_count > 0:
             self.ui.status_label.setText(f"Toggled bounds visibility for {toggled_count} shapes.")
 
-    def _prepare_parts_from_ui(self, spacing, boundary_resolution):
+    def _prepare_parts_from_ui(self, spacing, boundary_resolution, layout_obj):
         """Reads the UI table and creates a list of Shape objects to be nested."""
         global_rotation_steps = self.ui.rotation_steps_spinbox.value() # This widget is in NestingPanel
         quantities = {}
@@ -354,43 +277,79 @@ class NestingController:
 
         master_shapes_from_ui = {obj.Label: obj for obj in self.ui.selected_shapes_to_process if obj.Label in quantities}
 
-        
-        parts_to_nest = [] # This will be a list of disposable Shape object copies
-        unique_master_shape_wrappers = [] # To store the unique Shape objects for the MasterShapes group
-        
-        # --- Step 1: Create a master Shape object for each unique part and generate its bounds once. ---
-        master_shape_map = {}
+        # --- Create the hidden MasterShapes group ---
+        master_shapes_group = self.doc.addObject("App::DocumentObjectGroup", "MasterShapes")
+        layout_obj.addObject(master_shapes_group)
+
+        parts_to_nest = []
+        master_shape_obj_map = {} # Maps original FreeCAD object ID to the new master ShapeObject
+
+        # --- Step 1: Create the FreeCAD "master" objects for each unique part. ---
         for label, master_obj in master_shapes_from_ui.items():
-            FreeCAD.Console.PrintMessage(f"DEBUG: Preparing master shape for label '{label}'. Source FreeCAD object id: {id(master_obj)}\n")
             try:
-                # This creates a new in-memory Shape object for the master.
-                master_shape_instance = Shape(master_obj)
-                shape_processor.create_single_nesting_part(master_shape_instance, master_obj, spacing, boundary_resolution)
-                FreeCAD.Console.PrintMessage(f"Prepared master shape {label} with area {master_shape_instance.area}\n") # DEBUG
-                master_shape_map[label] = master_shape_instance
+                # Create a temporary in-memory shape to process geometry and get the centroid.
+                temp_shape_wrapper = Shape(master_obj)
+                shape_processor.create_single_nesting_part(temp_shape_wrapper, master_obj, spacing, boundary_resolution)
+
+                # Create the master container and the ShapeObject that will live inside it.
+                master_container = self.doc.addObject("App::Part", f"master_{label}")
+                master_shape_obj = create_shape_object(f"master_shape_{label}")
+                master_shape_obj.Shape = master_obj.Shape.copy()
+
+                # Place the shape object inside the container, offset by its centroid.
+                if temp_shape_wrapper.source_centroid:
+                    master_shape_obj.Placement = FreeCAD.Placement(temp_shape_wrapper.source_centroid.negative(), FreeCAD.Rotation())
+                master_container.addObject(master_shape_obj)
+
+                # Draw the bounds and add them to the container.
+                if temp_shape_wrapper.polygon:
+                    boundary_obj = temp_shape_wrapper.draw_bounds(self.doc, FreeCAD.Vector(0,0,0), master_shapes_group)
+                    if boundary_obj:
+                        master_container.addObject(boundary_obj)
+                        boundary_obj.Placement = FreeCAD.Placement()
+                        master_shape_obj.BoundaryObject = boundary_obj
+                        master_shape_obj.ShowBounds = False
+                        if hasattr(boundary_obj, "ViewObject"): boundary_obj.ViewObject.Visibility = False
+                
+                master_shapes_group.addObject(master_container)
+                master_shape_obj_map[id(master_obj)] = master_shape_obj
+
             except Exception as e:
                 FreeCAD.Console.PrintError(f"Could not create boundary for '{master_obj.Label}', it will be skipped. Error: {e}\n")
                 continue
-        
-        # This list contains one unique, processed Shape object for each master part.
-        unique_master_shape_wrappers = list(master_shape_map.values())
 
-        # --- Step 2: Create deep copies of the master shapes for the nesting algorithm based on quantity. ---
+        # Hide the master shapes group itself.
+        if FreeCAD.GuiUp and hasattr(master_shapes_group, "ViewObject"):
+            master_shapes_group.ViewObject.Visibility = False
+
+        # --- Step 2: Create in-memory Shape instances and temporary FreeCAD copies for nesting. ---
         add_labels = self.ui.add_labels_checkbox.isChecked()
         font_path = getattr(self.ui, 'selected_font_path', None)
+        parts_to_place_group = self.doc.getObject("PartsToPlace")
 
-        # Iterate through the master shapes we just created.
-        for label, master_shape_instance in master_shape_map.items():
+        for label, original_obj in master_shapes_from_ui.items():
             quantity, part_rotation_steps = quantities.get(label, (0, global_rotation_steps))
+            master_shape_obj = master_shape_obj_map.get(id(original_obj))
+            if not master_shape_obj: continue
+
             for i in range(quantity):
-                # For each quantity, create a deep copy. This is critical.
-                FreeCAD.Console.PrintMessage(f"DEBUG: Deep copying master shape '{label}' (id={id(master_shape_instance)}) for instance {i+1}.\n")
-                shape_instance = copy.deepcopy(master_shape_instance)
+                # Create the in-memory Shape object for the algorithm.
+                shape_instance = Shape(original_obj) # Source is the original user-selected object
+                shape_processor.create_single_nesting_part(shape_instance, original_obj, spacing, boundary_resolution)
                 shape_instance.instance_num = i + 1
                 shape_instance.id = f"{shape_instance.source_freecad_object.Label}_{shape_instance.instance_num}"
-                shape_instance.spacing = spacing # Explicitly set spacing on each instance
+                shape_instance.spacing = spacing
                 shape_instance.rotation_steps = part_rotation_steps
-                shape_instance.fc_object = None # Initialize link to physical object as None
+
+                # Create a temporary FreeCAD object copy for this instance and link it.
+                part_copy = self.doc.copyObject(master_shape_obj, True)
+                part_copy.Label = f"part_{shape_instance.id}"
+                parts_to_place_group.addObject(part_copy)
+                shape_instance.fc_object = part_copy
+
+                # Set visibility for simulation.
+                part_copy.ShowBounds = True
+                part_copy.ShowShape = False
 
                 # Store the label text to be created later, not the FreeCAD object itself.
                 if add_labels and Draft and font_path:
@@ -398,4 +357,4 @@ class NestingController:
 
                 parts_to_nest.append(shape_instance)
 
-        return parts_to_nest, unique_master_shape_wrappers
+        return parts_to_nest
