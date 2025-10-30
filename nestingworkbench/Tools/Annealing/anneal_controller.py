@@ -70,7 +70,8 @@ class AnnealController:
 
         # --- Run the SA algorithm directly ---
         optimized_parts, remaining_parts = self._run_annealing_on_sheet(
-            mobile_parts, fixed_parts, sheet_w, sheet_h
+            mobile_parts, fixed_parts, sheet_w, sheet_h,
+            simulate=self.ui.sa_simulate_checkbox.isChecked()
         )
 
         # --- Reconstruct and Draw ---
@@ -136,12 +137,13 @@ class AnnealController:
             FreeCAD.Console.PrintError(f"Error reading properties from layout group: {e}\n")
         return None
 
-    def _run_annealing_on_sheet(self, parts_to_anneal, fixed_parts, sheet_w, sheet_h):
+    def _run_annealing_on_sheet(self, parts_to_anneal, fixed_parts, sheet_w, sheet_h, simulate=False):
         """
         Runs the simulated annealing algorithm to pack parts_to_anneal onto a
         single sheet, avoiding collisions with fixed_parts.
         """
         if not parts_to_anneal:
+            if simulate: QtGui.QApplication.processEvents() # Clear any lingering UI updates
             return [], []
 
         # --- Get SA parameters from UI ---
@@ -166,6 +168,11 @@ class AnnealController:
                 new_solution = self._get_random_neighbor(current_solution, temp, temp_initial, sheet_w, sheet_h, rotation_steps)
                 new_cost = self._calculate_cost(new_solution, parts_to_anneal, fixed_parts, sheet_w, sheet_h)
 
+                if simulate:
+                    self._update_simulation_view(new_solution, parts_to_anneal)
+                    if total_iterations % 20 == 0: # Update GUI every 20 iterations
+                        QtGui.QApplication.processEvents()
+
                 delta_cost = new_cost - current_cost
                 if delta_cost < 0 or random.random() < math.exp(-delta_cost / temp):
                     current_solution = new_solution
@@ -177,6 +184,9 @@ class AnnealController:
             
             temp *= cooling_rate
 
+        if simulate:
+            QtGui.QApplication.processEvents() # Final GUI update
+
         # --- Post-process to set final placements ---
         final_parts = self._get_parts_from_placements(best_solution, parts_to_anneal)
         
@@ -184,18 +194,29 @@ class AnnealController:
         # could check for parts that are still outside the boundary and return them as unplaced.
         return final_parts, []
 
+    def _update_simulation_view(self, placements, source_parts):
+        """Updates the FreeCAD objects for live simulation view."""
+        for i, part in enumerate(source_parts):
+            if part.fc_object:
+                # The annealing works in sheet-local coordinates. We need to translate
+                # this to the global coordinate of the target sheet.
+                sheet_origin = FreeCAD.Vector(part.sheet_id * (self.layout_group.SheetWidth + self.layout_group.PartSpacing), 0, 0)
+                
+                # Create a new placement that includes the sheet's origin offset.
+                global_placement = placements[i].copy()
+                global_placement.Base += sheet_origin
+                
+                part.fc_object.Placement = global_placement
+
     def _get_parts_from_placements(self, placements, source_parts):
-        """Converts a list of FreeCAD.Placement objects back to ShapeBounds."""
+        """Converts a list of FreeCAD.Placement objects back to Shape objects."""
         temp_parts = []
         for i, part in enumerate(source_parts):
             new_part = copy.deepcopy(part)
             placement = placements[i]
             
-            angle = placement.Rotation.Angle * (180 / math.pi)
-            x = placement.Base.x
-            y = placement.Base.y
-
-            new_part.set_placement(x, y, angle)
+            new_part.set_rotation(placement.Rotation.Angle * (180 / math.pi))
+            new_part.move_to(placement.Base.x, placement.Base.y)
             temp_parts.append(new_part)
         return temp_parts
 
@@ -320,9 +341,15 @@ class AnnealController:
 
                     # Create a deep copy of the master shape for this instance
                     part_instance = copy.deepcopy(master_shape)
+                    part_instance.fc_object = obj # Link to the live FreeCAD object
                     part_instance.sheet_id = i # Store which sheet it's on
-                    part_instance.set_rotation(obj.Placement.Rotation.Angle * (180 / math.pi))
-                    part_instance.move_to(obj.Placement.Base.x, obj.Placement.Base.y)
+
+                    # The annealing algorithm works in sheet-local coordinates (origin 0,0).
+                    # We need to subtract the sheet's origin from the object's global placement.
+                    sheet_origin = FreeCAD.Vector(i * (self.layout_group.SheetWidth + spacing), 0, 0)
+                    local_placement = obj.Placement.inverse().multiply(FreeCAD.Placement(sheet_origin, FreeCAD.Rotation())).inverse()
+                    part_instance.set_rotation(local_placement.Rotation.Angle * (180 / math.pi))
+                    part_instance.move_to(local_placement.Base.x, local_placement.Base.y)
 
                     if self.ui.consolidate_checkbox.isChecked() and i == last_sheet_index:
                         mobile_parts.append(part_instance)

@@ -81,31 +81,42 @@ class GravityNester(BaseNester):
         the bin edge or another placed part.
         If a collision occurs, it attempts to "shake" the part free once.
         """
-        # --- Phase 1: Initial Gravity Movement ---
-        self._apply_gravity_to_part(part, sheet, direction)
-        
-        # --- Phase 2: Shake on Collision ---
-        # The part is now at its final resting place from gravity. Try to shake it.
-        pre_shake_centroid = part.centroid
-        pre_shake_pos = (pre_shake_centroid.x, pre_shake_centroid.y) if pre_shake_centroid else (0, 0)
-        
-        # --- Step 2a: Try rotation-only annealing ---
-        # We check the UI setting from the controller before attempting the rotation shake.
-        if self.anneal_rotate_enabled:
-            rot_pos, rot_rot = self._anneal_part(part, sheet, direction, rotate_enabled=True, translate_enabled=False)
-        else:
-            rot_pos = pre_shake_pos # If rotation is disabled, it didn't move.
-        
-        # Check if rotation found a valid spot. If not, try translation.
-        moved_distance_sq_rot = (rot_pos[0] - pre_shake_pos[0])**2 + (rot_pos[1] - pre_shake_pos[1])**2
-        if math.isclose(moved_distance_sq_rot, 0.0):
-            # --- Step 2b: Try translation-only annealing ---
-            # We check the UI setting from the controller before attempting the translation shake.
-            if self.anneal_translate_enabled:
-                self._anneal_part(part, sheet, direction, rotate_enabled=False, translate_enabled=True)
-        
-        # --- Phase 3: Final Gravity Movement ---
-        # After shaking, try one last gravity move to see if a new path opened up.
-        self._apply_gravity_to_part(part, sheet, direction)
-                
+        FreeCAD.Console.PrintMessage(f"\n--- Processing part {part.id} ---\n")
+        # Loop to allow the part to repeatedly fall and shake until it settles.
+        for i in range(self.max_nesting_steps): # Use max_nesting_steps as a safeguard against infinite loops
+            FreeCAD.Console.PrintMessage(f"  [Cycle {i+1}] Starting cycle for part {part.id}.\n")
+
+            # --- Phase 1: Gravity Movement ---
+            # Record position before applying gravity.
+            pre_gravity_x, pre_gravity_y, _, _ = part.bounding_box()
+            FreeCAD.Console.PrintMessage(f"    Phase 1 (Gravity): Start pos ({pre_gravity_x:.2f}, {pre_gravity_y:.2f}). Applying gravity...\n")
+            self._apply_gravity_to_part(part, sheet, direction)
+            post_gravity_x, post_gravity_y, _, _ = part.bounding_box()
+            FreeCAD.Console.PrintMessage(f"    Phase 1 (Gravity): End pos ({post_gravity_x:.2f}, {post_gravity_y:.2f}).\n")
+
+            # --- Phase 2: Shake on Collision ---
+            # The part is now at its resting place. Try to shake it to find a better fit.
+            pre_shake_x, pre_shake_y, _, _ = part.bounding_box()
+            FreeCAD.Console.PrintMessage(f"    Phase 2 (Anneal): Start pos ({pre_shake_x:.2f}, {pre_shake_y:.2f}). Annealing...\n")
+            
+            # The _anneal_part function returns the new position if successful, or the original position if not.
+            # We compare the returned centroid with the part's current centroid to see if a change occurred.
+            new_pos, new_rot = self._anneal_part(part, sheet, direction, rotate_enabled=self.anneal_rotate_enabled, translate_enabled=self.anneal_translate_enabled)
+            
+            post_shake_x, post_shake_y, _, _ = part.bounding_box()
+            FreeCAD.Console.PrintMessage(f"    Phase 2 (Anneal): End pos ({post_shake_x:.2f}, {post_shake_y:.2f}).\n")
+
+            # --- Phase 3: Check if Settled ---
+            # A part is settled if it did not move during the gravity phase AND it did not
+            # find a new position during the annealing phase. If it found a new position
+            # during annealing, we loop again to re-apply gravity from that new spot.
+            gravity_moved = abs(post_gravity_x - pre_gravity_x) > 1e-6 or abs(post_gravity_y - pre_gravity_y) > 1e-6
+            shake_moved = abs(post_shake_x - post_gravity_x) > 1e-6 or abs(post_shake_y - post_gravity_y) > 1e-6
+            
+            FreeCAD.Console.PrintMessage(f"    Phase 3 (Settle Check): Gravity moved: {gravity_moved}, Shake moved: {shake_moved}.\n")
+
+            if not gravity_moved and not shake_moved:
+                FreeCAD.Console.PrintMessage(f"  [Cycle {i+1}] Part has settled. Exiting loop.\n")
+                break
+
         return part

@@ -108,16 +108,22 @@ class BaseNester(object):
         new_angle = (initial_angle + angle_step_magnitude * rotation_direction) % 360.0
         part_to_shake.set_rotation(new_angle) # No UI update
 
+        if self.update_callback:
+            self.update_callback(part_to_shake, sheet)
+
         return sheet.is_placement_valid(part_to_shake, recalculate_union=False, part_to_ignore=part_to_shake)
 
     def _try_translation_shake(self, part_to_shake, sheet, initial_bl_x, initial_bl_y, initial_angle, current_gravity_direction, side_direction, i, current_sheet=None):
         """Helper to attempt a single translational shake."""
+        FreeCAD.Console.PrintMessage(f"        ANNEAL_DEBUG: _try_translation_shake (step {i}): side_dir={side_direction}\n")
         if not self.anneal_translate_enabled:
+            FreeCAD.Console.PrintMessage("        ANNEAL_DEBUG:  -> translate disabled, skipping.\n")
             return False
 
         # Reset part to its pre-shake state for this attempt
         part_to_shake.move_to(initial_bl_x, initial_bl_y) # No UI update
         part_to_shake.set_rotation(initial_angle, reposition=False) # No UI update
+        FreeCAD.Console.PrintMessage(f"        ANNEAL_DEBUG:  -> Reset to ({initial_bl_x:.2f}, {initial_bl_y:.2f}) @ {initial_angle:.1f} deg\n")
 
         amplitude = self.step_size * (i // 2 + 1)
 
@@ -129,9 +135,21 @@ class BaseNester(object):
         else:
             perp_dir_for_shake = (-current_gravity_direction[1], current_gravity_direction[0])
 
+        FreeCAD.Console.PrintMessage(f"        ANNEAL_DEBUG:  -> Amplitude: {amplitude:.2f}, Perp Dir: ({perp_dir_for_shake[0]:.2f}, {perp_dir_for_shake[1]:.2f})\n")
         shake_dx = perp_dir_for_shake[0] * amplitude * side_direction
         shake_dy = perp_dir_for_shake[1] * amplitude * side_direction
-        part_to_shake.move(shake_dx, dy=shake_dy) # No UI update
+
+        # We must use move_to with absolute coordinates. The part was reset to initial_bl_x/y,
+        # so we calculate the new absolute position from there.
+        new_x = initial_bl_x + shake_dx
+        new_y = initial_bl_y + shake_dy
+        part_to_shake.move_to(new_x, new_y) # No UI update
+
+        post_shake_x, post_shake_y, _, _ = part_to_shake.bounding_box()
+        FreeCAD.Console.PrintMessage(f"        ANNEAL_DEBUG:  -> Shaking by ({shake_dx:.2f}, {shake_dy:.2f}). New pos check...\n")
+        FreeCAD.Console.PrintMessage(f"        ANNEAL_DEBUG:  -> Position after shake: ({post_shake_x:.2f}, {post_shake_y:.2f})\n")
+        if self.update_callback:
+            self.update_callback(part_to_shake, sheet)
 
         return sheet.is_placement_valid(part_to_shake, recalculate_union=False, part_to_ignore=part_to_shake)
 
@@ -144,44 +162,40 @@ class BaseNester(object):
         a valid position, it returns the starting position and rotation.
         """
 
-        start_centroid = part_to_shake.centroid
-        start_pos = (start_centroid.x, start_centroid.y) if start_centroid else (0, 0)
+        # We must use the bottom-left corner for position, as this is what `move_to` uses.
+        # Using the centroid was causing a coordinate mismatch.
+        initial_bl_x, initial_bl_y, _, _ = part_to_shake.bounding_box()
+        start_pos = (initial_bl_x, initial_bl_y)
         start_rot = part_to_shake.angle # This is the angle to return if shaking fails
 
-        # If no annealing steps are configured or both rotate and translate are disabled, return immediately.
+        FreeCAD.Console.PrintMessage(f"      ANNEAL_DEBUG: --- Entering _anneal_part for '{part_to_shake.id}' ---\n")
+        FreeCAD.Console.PrintMessage(f"      ANNEAL_DEBUG: Start pos: ({start_pos[0]:.2f}, {start_pos[1]:.2f}), Angle: {start_rot:.1f}\n")
+        FreeCAD.Console.PrintMessage(f"      ANNEAL_DEBUG: Anneal steps: {self.anneal_steps}, Rotate: {rotate_enabled}, Translate: {translate_enabled}\n")
+
         if self.anneal_steps == 0 or (not self.anneal_rotate_enabled and not self.anneal_translate_enabled) or (not rotate_enabled and not translate_enabled):
             return start_pos, start_rot
 
-        # Store the initial state of the part.
-        initial_bl_x, initial_bl_y, _, _ = part_to_shake.bounding_box()
-        initial_angle = part_to_shake.angle
-
-        # Determine the base perpendicular direction (relative to the current gravity)
-        base_perp_dir = (-current_gravity_direction[1], current_gravity_direction[0])
-
-        # Randomize the initial side direction to avoid bias (e.g., always trying right first)
-        # Randomize the initial side direction to avoid bias (e.g., always trying right first)
         initial_side_direction = random.choice([1, -1])
         for i in range(self.anneal_steps):
             side_direction = initial_side_direction if i % 2 == 0 else -initial_side_direction
             
-            is_valid = False
-            if rotate_enabled and not translate_enabled:
-                is_valid = self._try_rotation_shake(part_to_shake, sheet, initial_bl_x, initial_bl_y, initial_angle, side_direction, i)
-            elif not rotate_enabled and translate_enabled:
-                is_valid = self._try_translation_shake(part_to_shake, sheet, initial_bl_x, initial_bl_y, initial_angle, current_gravity_direction, side_direction, i)
+            if translate_enabled:
+                FreeCAD.Console.PrintMessage(f"      ANNEAL_DEBUG: Trying translation shake for step {i}.\n")
+                is_valid = self._try_translation_shake(part_to_shake, sheet, initial_bl_x, initial_bl_y, start_rot, current_gravity_direction, side_direction, i)
 
-            if is_valid:
-                # Found a valid position. Return its current centroid and angle.
-                if self.update_callback:
-                    self.update_callback(part_to_shake, sheet)
-                new_centroid = part_to_shake.centroid
-                new_pos = (new_centroid.x, new_centroid.y) if new_centroid else (0, 0)
-                return new_pos, part_to_shake.angle
+                if is_valid:
+                    # Found a valid position. Finalize the move and exit immediately.
+                    new_bl_x, new_bl_y, _, _ = part_to_shake.bounding_box()
+                    new_pos = (new_bl_x, new_bl_y)
+                    FreeCAD.Console.PrintMessage(f"      ANNEAL_DEBUG: SUCCESS! Found valid shake at pos ({new_pos[0]:.2f}, {new_pos[1]:.2f}).\n")
+                    if self.update_callback:
+                        self.update_callback(part_to_shake, sheet)
+                    return new_pos, part_to_shake.angle
 
         # If the loop finishes, no valid shake was found.
         # Revert the part to its original state before returning the initial position.
-        part_to_shake.move_to(initial_bl_x, initial_bl_y)
-        part_to_shake.set_rotation(initial_angle)
+        FreeCAD.Console.PrintMessage(f"      ANNEAL_DEBUG: FAILED. No valid shake found after {self.anneal_steps} steps. Reverting part.\n")
+        part_to_shake.move_to(start_pos[0], start_pos[1])
+        part_to_shake.set_rotation(start_rot)
 
         return start_pos, start_rot # Could not shake free, return original state
