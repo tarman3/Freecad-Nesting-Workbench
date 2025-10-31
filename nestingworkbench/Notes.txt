@@ -6,6 +6,10 @@ Notes for Nesting Workbench
 Fix annealing step in gravity
 
 shapes do not continune in gravity direction after annealing step
+
+Need a way to cancel simulation. If nest button pressed twice, first instance continues to run.
+
+
 maximize overlap area 
 check bounds overlap area
 
