@@ -11,34 +11,220 @@ from .base_nester import BaseNester
 from ....datatypes.placed_part import PlacedPart
 import Part
 
+
+class NfpCache:
+    """Caches No-Fit Polygons and polygon decompositions."""
+
+    def __init__(self):
+        self._nfp_cache = {}
+        self._decomposition_cache = {}
+
+    def get_nfp(self, key):
+        """Gets a No-Fit Polygon from the cache."""
+        return self._nfp_cache.get(key)
+
+    def set_nfp(self, key, nfp):
+        """Sets a No-Fit Polygon in the cache."""
+        self._nfp_cache[key] = nfp
+
+    def get_decomposition(self, key):
+        """Gets a polygon decomposition from the cache."""
+        return self._decomposition_cache.get(key)
+
+    def set_decomposition(self, key, decomposition):
+        """Sets a polygon decomposition in the cache."""
+        self._decomposition_cache[key] = decomposition
+
+
 class MinkowskiNester(BaseNester):
     """Nesting algorithm using Minkowski sums to create No-Fit Polygons."""
     def __init__(self, width, height, rotation_steps=1, **kwargs):
         super().__init__(width, height, rotation_steps, **kwargs)
         self._debug_group = None
+        self._cache = NfpCache()
+
+    def nest(self, parts):
+        """Overrides the base nester to add Minkowski-specific cleanup."""
+        doc = FreeCAD.ActiveDocument
+        if doc:
+            debug_group = doc.getObject("MinkowskiDebug")
+            if debug_group:
+                # Using removeObject recursively is safer for groups
+                doc.removeObject(debug_group.Name)
+                doc.recompute()
+        self._debug_group = None # Reset the handle
+        return super().nest(parts)
 
     def _draw_debug_poly(self, poly, name):
         """Helper to draw a shapely polygon for debugging."""
         if not self._debug_group:
+            # The debug group is now created and cleaned up by this nester's nest() method.
+            # This prevents interference with the nesting logic.
             doc = FreeCAD.ActiveDocument
-            if doc.getObject("MinkowskiDebug"):
-                doc.removeObject("MinkowskiDebug")
-                doc.recompute()
-            self._debug_group = doc.addObject("App::DocumentObjectGroup", "MinkowskiDebug")
+            if doc.getObject("MinkowskiDebug") is None:
+                self._debug_group = doc.addObject("App::DocumentObjectGroup", "MinkowskiDebug")
 
         if poly and not poly.is_empty:
             wires = [Part.makePolygon([(v[0], v[1], 0) for v in poly.exterior.coords])]
-            debug_obj = self._debug_group.newObject("Part::Feature", name)
-            debug_obj.Shape = Part.makeCompound(wires)
+            # debug_obj = self._debug_group.newObject("Part::Feature", name)
+            # debug_obj.Shape = Part.makeCompound(wires)
             
+    def _handle_first_part(self, part_to_place, sheet, angle):
+        """Handles the placement of the first part on an empty sheet."""
+        part_to_place.set_rotation(angle)
+        # For the first part, we try to place its bottom-left corner at the origin.
+        part_to_place.move_to(0, 0)
+        if sheet.is_placement_valid(part_to_place):
+            return part_to_place
+        return None
+
+    def _generate_nfps(self, part_to_place, sheet, angle):
+        """Generates the No-Fit Polygons for a given part and sheet."""
+        individual_nfps = []
+        for placed_part in sheet.parts:
+            placed_part_master_label = placed_part.shape.source_freecad_object.Label
+            part_to_place_master_label = part_to_place.source_freecad_object.Label
+            placed_part_angle = placed_part.angle
+
+            cache_key = (
+                placed_part_master_label,
+                placed_part_angle,
+                part_to_place_master_label,
+                angle,
+            )
+            master_nfp = self._cache.get_nfp(cache_key)
+
+            if master_nfp is None:
+                # Cache miss. Calculate the NFP now and store it.
+                placed_part_master_poly = placed_part.shape.original_polygon
+                part_to_place_master_poly = part_to_place.original_polygon
+
+                master_nfp = self._calculate_and_cache_nfp(
+                    placed_part_master_poly,
+                    placed_part_angle,
+                    part_to_place_master_poly,
+                    angle,
+                    cache_key,
+                )
+
+            if master_nfp:
+                # The NFP's reference point is the sum of the reference points.
+                # We translate the EXTERIOR of the NFP by the placed part's centroid to position it correctly on the sheet.
+                placed_part_centroid = placed_part.shape.centroid
+
+                # The exterior represents the "no-go" zone around the placed part.
+                translated_exterior = translate(
+                    Polygon(master_nfp.exterior),
+                    xoff=placed_part_centroid.x,
+                    yoff=placed_part_centroid.y,
+                )
+
+                # The interiors represent the "go-zones" (holes). These are already in the correct
+                # coordinate space relative to the placed part's centroid, so they do NOT need to be translated again.
+                # We must, however, translate them to the final position of the placed part on the sheet.
+                translated_interiors = [
+                    translate(
+                        Polygon(interior),
+                        xoff=placed_part_centroid.x,
+                        yoff=placed_part_centroid.y,
+                    )
+                    for interior in master_nfp.interiors
+                ]
+
+                individual_nfps.append(
+                    Polygon(
+                        translated_exterior.exterior, [p.exterior for p in translated_interiors]
+                    )
+                )
+        return individual_nfps
+
+    def _find_best_placement(
+        self, part_to_place, sheet, angle, rotated_part_poly, individual_nfps
+    ):
+        """Finds the best placement for a given rotation."""
+        best_placement_info = {'metric': float('inf')}
+
+        # 1. Generate candidate points from the NFPs.
+        hole_candidates, external_candidates = self._get_candidate_positions(
+            individual_nfps, rotated_part_poly
+        )
+
+        # We need the polygon at the current rotation to test placements.
+        if not rotated_part_poly:
+            return best_placement_info
+
+        # 2. Find the best valid placement for this rotation, prioritizing holes.
+        # The candidate points are for the centroid, so we need the centroid of the rotated part poly
+        rotated_poly_centroid = rotated_part_poly.centroid
+
+        # --- Stage 1: Check holes first ---
+        hole_candidates.sort(key=lambda p: (p.y, p.x))
+        for point in hole_candidates:
+            # Temporarily move the part to the candidate position for validation.
+            original_part_polygon = part_to_place.polygon
+
+            # The 'point' is where the centroid should be.
+            dx = point.x - rotated_poly_centroid.x
+            dy = point.y - rotated_poly_centroid.y
+            part_to_place.polygon = translate(rotated_part_poly, xoff=dx, yoff=dy)
+
+            # self._draw_debug_poly(
+            #     part_to_place.polygon, f"hole_test_{point.x:.0f}_{point.y:.0f}"
+            # )
+
+            is_valid = self._is_placement_valid_with_holes(
+                part_to_place.polygon, sheet, part_to_place
+            )
+
+            part_to_place.polygon = original_part_polygon  # Restore the polygon immediately.
+            if is_valid:
+                metric = point.y * self._bin_width + point.x
+                if metric < best_placement_info['metric']:
+                    best_placement_info = {
+                        'x': point.x,
+                        'y': point.y,
+                        'angle': angle,
+                        'metric': metric,
+                    }
+                return best_placement_info  # Found the best spot in a hole for this angle
+
+        # --- Stage 2: If no hole fit, check external positions ---
+        external_candidates.sort(key=lambda p: (p.y, p.x))
+        for point in external_candidates:
+            original_part_polygon = part_to_place.polygon
+
+            # The 'point' is where the centroid should be.
+            dx = point.x - rotated_poly_centroid.x
+            dy = point.y - rotated_poly_centroid.y
+            part_to_place.polygon = translate(rotated_part_poly, xoff=dx, yoff=dy)
+
+            # self._draw_debug_poly(
+            #     part_to_place.polygon, f"ext_test_{point.x:.0f}_{point.y:.0f}"
+            # )
+
+            is_valid = self._is_placement_valid_with_holes(
+                part_to_place.polygon, sheet, part_to_place
+            )
+
+            part_to_place.polygon = original_part_polygon  # Restore the polygon immediately.
+            if is_valid:
+                metric = point.y * self._bin_width + point.x
+                if metric < best_placement_info['metric']:
+                    best_placement_info = {
+                        'x': point.x,
+                        'y': point.y,
+                        'angle': angle,
+                        'metric': metric,
+                    }
+                return best_placement_info  # Found the best external spot for this angle
+
+        return best_placement_info
+
     def _try_place_part_on_sheet(self, part_to_place, sheet):
         """
         Tries to place a single shape on a given sheet using Minkowski sums.
         Returns the placed shape on success, None on failure.
         """
-        
-        if not hasattr(self, '_nfp_cache'): self._nfp_cache = {}
-        if not hasattr(self, '_decomposition_cache'): self._decomposition_cache = {}
         
         # Ensure the part has an original_polygon to rotate from. This is critical.
         # If it's missing, the part cannot be rotated, leading to silent failure.
@@ -53,14 +239,10 @@ class MinkowskiNester(BaseNester):
 
             # --- Handle the first part on an empty sheet ---
             if not sheet.parts:
-                part_to_place.set_rotation(angle)
-                # For the first part, we try to place its bottom-left corner at the origin.
-                part_to_place.move_to(0, 0)
-                if sheet.is_placement_valid(part_to_place):
-                    return part_to_place
-                else:
-                    pass
-                continue # Try next rotation if origin placement is invalid
+                placed_part = self._handle_first_part(part_to_place, sheet, angle)
+                if placed_part:
+                    return placed_part
+                continue  # Try next rotation if origin placement is invalid
 
             # We don't move the part itself, we just get its polygon at the target rotation
             rotated_part_poly = rotate(part_to_place.original_polygon, angle, origin='centroid')
@@ -68,100 +250,14 @@ class MinkowskiNester(BaseNester):
             FreeCAD.Console.PrintMessage(f"MINKOWSKI:  - Trying rotation {angle:.1f} degrees.\n")
 
             # 1. Compute the individual No-Fit Polygons (NFPs).
-            individual_nfps = []
-            for placed_part in sheet.parts:
-                placed_part_master_label = placed_part.shape.source_freecad_object.Label
-                part_to_place_master_label = part_to_place.source_freecad_object.Label
-                placed_part_angle = placed_part.angle
-                
-                cache_key = (placed_part_master_label, placed_part_angle, part_to_place_master_label, angle)
-                master_nfp = self._nfp_cache.get(cache_key)
+            individual_nfps = self._generate_nfps(part_to_place, sheet, angle)
 
-                if master_nfp is None:
-                    # Cache miss. Calculate the NFP now and store it.
-                    placed_part_master_poly = placed_part.shape.original_polygon
-                    part_to_place_master_poly = part_to_place.original_polygon
-                    
-                    master_nfp = self._calculate_and_cache_nfp(
-                        placed_part_master_poly, placed_part_angle, 
-                        part_to_place_master_poly, angle, cache_key
-                    )
+            placement_info = self._find_best_placement(
+                part_to_place, sheet, angle, rotated_part_poly, individual_nfps
+            )
 
-                if master_nfp:
-                    # The NFP's reference point is the sum of the reference points.
-                    # We translate the EXTERIOR of the NFP by the placed part's centroid to position it correctly on the sheet.
-                    placed_part_centroid = placed_part.shape.centroid
-                    
-                    # The exterior represents the "no-go" zone around the placed part.
-                    translated_exterior = translate(Polygon(master_nfp.exterior), xoff=placed_part_centroid.x, yoff=placed_part_centroid.y)
-                    
-                    # The interiors represent the "go-zones" (holes). These are already in the correct
-                    # coordinate space relative to the placed part's centroid, so they do NOT need to be translated again.
-                    # We must, however, translate them to the final position of the placed part on the sheet.
-                    translated_interiors = [translate(Polygon(interior), xoff=placed_part_centroid.x, yoff=placed_part_centroid.y) for interior in master_nfp.interiors]
-
-                    individual_nfps.append(Polygon(translated_exterior.exterior, [p.exterior for p in translated_interiors]))
-
-            # 2. Generate candidate points from the NFPs.
-            hole_candidates, external_candidates = self._get_candidate_positions(individual_nfps, rotated_part_poly)
-
-            # We need the polygon at the current rotation to test placements.
-            if not rotated_part_poly:
-                continue
-
-            # 3. Find the best valid placement for this rotation, prioritizing holes.
-            placement_found_for_angle = False
-            
-            # The candidate points are for the centroid, so we need the centroid of the rotated part poly
-            rotated_poly_centroid = rotated_part_poly.centroid
-
-            # --- Stage 1: Check holes first ---
-            hole_candidates.sort(key=lambda p: (p.y, p.x))
-            for point in hole_candidates:
-                # Temporarily move the part to the candidate position for validation.
-                original_part_polygon = part_to_place.polygon
-                
-                # The 'point' is where the centroid should be.
-                dx = point.x - rotated_poly_centroid.x
-                dy = point.y - rotated_poly_centroid.y
-                part_to_place.polygon = translate(rotated_part_poly, xoff=dx, yoff=dy)
-                
-                self._draw_debug_poly(part_to_place.polygon, f"hole_test_{point.x:.0f}_{point.y:.0f}")
-                
-                is_valid = self._is_placement_valid_with_holes(part_to_place.polygon, sheet, part_to_place)
-                
-                part_to_place.polygon = original_part_polygon # Restore the polygon immediately.
-                if is_valid:
-                    metric = point.y * self._bin_width + point.x
-                    if metric < best_placement_info['metric']:
-                        best_placement_info = {'x': point.x, 'y': point.y, 'angle': angle, 'metric': metric}
-                    placement_found_for_angle = True
-                    break # Found the best spot in a hole for this angle
-            
-            if placement_found_for_angle:
-                continue # A hole was filled, move to the next rotation to see if it's even better.
-
-            # --- Stage 2: If no hole fit, check external positions ---
-            external_candidates.sort(key=lambda p: (p.y, p.x))
-            for point in external_candidates:
-                original_part_polygon = part_to_place.polygon
-                
-                # The 'point' is where the centroid should be.
-                dx = point.x - rotated_poly_centroid.x
-                dy = point.y - rotated_poly_centroid.y
-                part_to_place.polygon = translate(rotated_part_poly, xoff=dx, yoff=dy)
-
-                self._draw_debug_poly(part_to_place.polygon, f"ext_test_{point.x:.0f}_{point.y:.0f}")
-                
-                is_valid = self._is_placement_valid_with_holes(part_to_place.polygon, sheet, part_to_place)
-                
-                part_to_place.polygon = original_part_polygon # Restore the polygon immediately.
-                if is_valid:
-                    metric = point.y * self._bin_width + point.x
-                    if metric < best_placement_info['metric']:
-                        best_placement_info = {'x': point.x, 'y': point.y, 'angle': angle, 'metric': metric}
-                    placement_found_for_angle = True
-                    break # Found the best external spot for this angle
+            if placement_info and placement_info.get('metric') is not None and placement_info.get('metric') < best_placement_info.get('metric', float('inf')):
+                best_placement_info = placement_info
 
         # After checking all rotations and their candidates, apply the best one found.
         if best_placement_info['x'] is not None:
@@ -277,8 +373,8 @@ class MinkowskiNester(BaseNester):
 
     def _calculate_and_cache_nfp(self, poly_A_master, angle_A, poly_B_master, angle_B, cache_key):
         """Calculates the NFP between two polygons and stores it in the cache."""
-        if cache_key in self._nfp_cache:
-            return self._nfp_cache[cache_key]
+        if self._cache.get_nfp(cache_key):
+            return self._cache.get_nfp(cache_key)
 
         # --- NFP Calculation with Hole Support ---
         # The NFP exterior is the minkowski sum of A's exterior and the reflected B.
@@ -306,7 +402,7 @@ class MinkowskiNester(BaseNester):
                         nfp_interiors.append(ifp_raw.exterior)
         
         master_nfp = Polygon(nfp_exterior.exterior, nfp_interiors) if nfp_exterior and nfp_exterior.area > 0 else None
-        self._nfp_cache[cache_key] = master_nfp
+        self._cache.set_nfp(cache_key, master_nfp)
         return master_nfp
 
     def _minkowski_sum(self, master_poly1, angle1, reflect1, master_poly2, angle2, reflect2, rot_origin1=None, rot_origin2=None):
@@ -352,8 +448,8 @@ class MinkowskiNester(BaseNester):
             return []
         
         cache_key = polygon.wkt
-        if cache_key in self._decomposition_cache:
-            return self._decomposition_cache[cache_key]
+        if self._cache.get_decomposition(cache_key):
+            return self._cache.get_decomposition(cache_key)
 
         if polygon.geom_type == 'MultiPolygon':
             all_decomposed_parts = []
@@ -368,13 +464,13 @@ class MinkowskiNester(BaseNester):
             from shapely.ops import triangulate
             triangles = triangulate(polygon)
             decomposed = [tri for tri in triangles if polygon.contains(tri.representative_point())]
-            self._decomposition_cache[cache_key] = decomposed
+            self._cache.set_decomposition(cache_key, decomposed)
             return decomposed
         except Exception as e:
             FreeCAD.Console.PrintWarning(f"MINKOWSKI:      - Shapely triangulation not available or failed: {e}. Falling back to convex hull.\n")
 
         result = [polygon.convex_hull]
-        self._decomposition_cache[cache_key] = result
+        self._cache.set_decomposition(cache_key, result)
         return result
 
     def _minkowski_sum_convex(self, poly1, poly2):

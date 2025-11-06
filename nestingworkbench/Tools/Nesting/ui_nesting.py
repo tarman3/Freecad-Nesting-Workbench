@@ -54,7 +54,7 @@ class NestingPanel(QtGui.QWidget):
 
         self.algorithm_dropdown = QtGui.QComboBox()
         self.algorithm_dropdown.addItems(["Gravity", "Genetic", "Minkowski"])
-        self.algorithm_dropdown.setCurrentIndex(0)
+        self.algorithm_dropdown.setCurrentIndex(2)
 
         # --- Genetic Packer Settings ---
         self.genetic_settings_group = QtGui.QGroupBox("Genetic Packer Settings")
@@ -182,7 +182,7 @@ class NestingPanel(QtGui.QWidget):
 
         # Connect signals
         self.algorithm_dropdown.currentIndexChanged.connect(self._on_algorithm_changed)
-        self._on_algorithm_changed(0) # Set initial visibility
+        self._on_algorithm_changed(self.algorithm_dropdown.currentIndex()) # Set initial visibility
 
         # Link label height input to the add labels checkbox
         self.add_labels_checkbox.stateChanged.connect(self.label_height_input.setEnabled)
