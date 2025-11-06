@@ -5,8 +5,7 @@ import copy
 from .algorithms import (
     genetic_nester,
     gravity_nester,
-    minkowski_nester,
-    sat_nester)
+    minkowski_nester)
 
 class NestingDependencyError(Exception):
     """Custom exception for missing optional dependencies like Shapely."""
@@ -37,13 +36,12 @@ def nest(parts, width, height, rotation_steps=1, algorithm='Grid Fill', simulate
         'Genetic': genetic_nester.GeneticNester,
         'Gravity': gravity_nester.GravityNester,
         'Minkowski': minkowski_nester.MinkowskiNester,
-        'SAT': sat_nester.SatNester
     }.get(algorithm)
 
     if nester_class is None:
         raise NotImplementedError(f"The algorithm '{algorithm}' is not supported.")
 
-    SHAPELY_ALGORITHMS = ['Genetic', 'Gravity', 'Minkowski', 'SAT']
+    SHAPELY_ALGORITHMS = ['Genetic', 'Gravity', 'Minkowski']
     if algorithm in SHAPELY_ALGORITHMS and not SHAPELY_AVAILABLE:
         show_shapely_installation_instructions()
         raise NestingDependencyError("The selected algorithm requires the 'Shapely' library, which is not installed.")

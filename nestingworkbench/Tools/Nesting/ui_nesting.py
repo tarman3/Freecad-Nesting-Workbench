@@ -53,7 +53,7 @@ class NestingPanel(QtGui.QWidget):
         self.rotation_steps_spinbox.valueChanged.connect(self.rotation_steps_slider.setValue)
 
         self.algorithm_dropdown = QtGui.QComboBox()
-        self.algorithm_dropdown.addItems(["Gravity", "Genetic", "Minkowski", "SAT"])
+        self.algorithm_dropdown.addItems(["Gravity", "Genetic", "Minkowski"])
         self.algorithm_dropdown.setCurrentIndex(0)
 
         # --- Genetic Packer Settings ---

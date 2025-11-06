@@ -1,5 +1,4 @@
 import math
-import pdb
 import random
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.affinity import translate, rotate, scale
@@ -9,21 +8,37 @@ from PySide import QtGui
 import FreeCAD
 from ....datatypes.sheet import Sheet
 from .base_nester import BaseNester
+from ....datatypes.placed_part import PlacedPart
+import Part
 
 class MinkowskiNester(BaseNester):
     """Nesting algorithm using Minkowski sums to create No-Fit Polygons."""
     def __init__(self, width, height, rotation_steps=1, **kwargs):
         super().__init__(width, height, rotation_steps, **kwargs)
-        FreeCAD.Console.PrintMessage("--- MinkowskiNester initialized ---\n")
-        self._decomposition_cache = {} # Cache for polygon decomposition results
-        self._nfp_cache = {} # Cache for No-Fit Polygons between master shapes
+        self._debug_group = None
 
+    def _draw_debug_poly(self, poly, name):
+        """Helper to draw a shapely polygon for debugging."""
+        if not self._debug_group:
+            doc = FreeCAD.ActiveDocument
+            if doc.getObject("MinkowskiDebug"):
+                doc.removeObject("MinkowskiDebug")
+                doc.recompute()
+            self._debug_group = doc.addObject("App::DocumentObjectGroup", "MinkowskiDebug")
+
+        if poly and not poly.is_empty:
+            wires = [Part.makePolygon([(v[0], v[1], 0) for v in poly.exterior.coords])]
+            debug_obj = self._debug_group.newObject("Part::Feature", name)
+            debug_obj.Shape = Part.makeCompound(wires)
+            
     def _try_place_part_on_sheet(self, part_to_place, sheet):
         """
         Tries to place a single shape on a given sheet using Minkowski sums.
         Returns the placed shape on success, None on failure.
         """
-        FreeCAD.Console.PrintMessage(f"MINKOWSKI: Attempting to place '{part_to_place.id}' on sheet {sheet.id}\n")
+        
+        if not hasattr(self, '_nfp_cache'): self._nfp_cache = {}
+        if not hasattr(self, '_decomposition_cache'): self._decomposition_cache = {}
         
         # Ensure the part has an original_polygon to rotate from. This is critical.
         # If it's missing, the part cannot be rotated, leading to silent failure.
@@ -32,10 +47,6 @@ class MinkowskiNester(BaseNester):
 
         best_placement_info = {'x': None, 'y': None, 'angle': None, 'metric': float('inf')}
         
-        # Iterate through all possible rotations for the part.
-        # A value of 0 or 1 means 1 step (no rotation).
-        FreeCAD.Console.PrintMessage(f"MINKOWSKI:  - Part '{part_to_place.id}' has {part_to_place.rotation_steps} rotation steps configured.\n")
-        FreeCAD.Console.PrintMessage(f"MINKOWSKI:  - Part '{part_to_place.id}' initial polygon: {part_to_place.polygon is not None}, original_polygon: {part_to_place.original_polygon is not None}\n")
 
         for i in range(part_to_place.rotation_steps):
             angle = i * (360.0 / part_to_place.rotation_steps) if part_to_place.rotation_steps > 1 else 0.0
@@ -45,12 +56,10 @@ class MinkowskiNester(BaseNester):
                 part_to_place.set_rotation(angle)
                 # For the first part, we try to place its bottom-left corner at the origin.
                 part_to_place.move_to(0, 0)
-                FreeCAD.Console.PrintMessage(f"MINKOWSKI:  - Sheet is empty. Testing first part at origin. Angle: {angle:.1f}, BBox: {part_to_place.bounding_box()}\n")
                 if sheet.is_placement_valid(part_to_place):
-                    FreeCAD.Console.PrintMessage(f"MINKOWSKI: Placed first part '{part_to_place.id}' at origin.\n")
                     return part_to_place
                 else:
-                    FreeCAD.Console.PrintMessage(f"MINKOWSKI:  - Origin placement at angle {angle:.1f} is invalid.\n")
+                    pass
                 continue # Try next rotation if origin placement is invalid
 
             # We don't move the part itself, we just get its polygon at the target rotation
@@ -70,7 +79,6 @@ class MinkowskiNester(BaseNester):
 
                 if master_nfp is None:
                     # Cache miss. Calculate the NFP now and store it.
-                    FreeCAD.Console.PrintMessage(f"MINKOWSKI: Calculating NFP: {placed_part_master_label} @ {placed_part_angle:.1f} vs {part_to_place_master_label} @ {angle:.1f}\n")
                     placed_part_master_poly = placed_part.shape.original_polygon
                     part_to_place_master_poly = part_to_place.original_polygon
                     
@@ -81,47 +89,85 @@ class MinkowskiNester(BaseNester):
 
                 if master_nfp:
                     # The NFP's reference point is the sum of the reference points.
-                    # We translate it by the placed part's centroid to position it correctly on the sheet.
+                    # We translate the EXTERIOR of the NFP by the placed part's centroid to position it correctly on the sheet.
                     placed_part_centroid = placed_part.shape.centroid
-                    translated_nfp = translate(master_nfp, xoff=placed_part_centroid.x, yoff=placed_part_centroid.y)
-                    individual_nfps.append(translated_nfp)
+                    
+                    # The exterior represents the "no-go" zone around the placed part.
+                    translated_exterior = translate(Polygon(master_nfp.exterior), xoff=placed_part_centroid.x, yoff=placed_part_centroid.y)
+                    
+                    # The interiors represent the "go-zones" (holes). These are already in the correct
+                    # coordinate space relative to the placed part's centroid, so they do NOT need to be translated again.
+                    # We must, however, translate them to the final position of the placed part on the sheet.
+                    translated_interiors = [translate(Polygon(interior), xoff=placed_part_centroid.x, yoff=placed_part_centroid.y) for interior in master_nfp.interiors]
+
+                    individual_nfps.append(Polygon(translated_exterior.exterior, [p.exterior for p in translated_interiors]))
 
             # 2. Generate candidate points from the NFPs.
-            candidate_points = self._get_candidate_positions(individual_nfps)
-            FreeCAD.Console.PrintMessage(f"MINKOWSKI: Generated {len(candidate_points)} candidate placement points.\n")
+            hole_candidates, external_candidates = self._get_candidate_positions(individual_nfps, rotated_part_poly)
 
             # We need the polygon at the current rotation to test placements.
             if not rotated_part_poly:
-                FreeCAD.Console.PrintError("MINKOWSKI: Part to place has no polygon. Cannot proceed.\n")
                 continue
 
-            # 3. Find the best valid placement for this rotation.
-            candidate_points.sort(key=lambda p: (p.y, p.x))
+            # 3. Find the best valid placement for this rotation, prioritizing holes.
+            placement_found_for_angle = False
+            
+            # The candidate points are for the centroid, so we need the centroid of the rotated part poly
+            rotated_poly_centroid = rotated_part_poly.centroid
 
-            for point in candidate_points:
-                # The candidate point is for the part's reference point (centroid).
-                # We create a temporary polygon at this position to check for validity.
-                temp_poly = translate(rotated_part_poly, xoff=point.x, yoff=point.y) # type: ignore
-
-                # Use the sheet's robust validation method.
-                if sheet.is_placement_valid_polygon(temp_poly):
-                    # Since candidates are sorted by y then x, the first valid one is the best for this rotation.
+            # --- Stage 1: Check holes first ---
+            hole_candidates.sort(key=lambda p: (p.y, p.x))
+            for point in hole_candidates:
+                # Temporarily move the part to the candidate position for validation.
+                original_part_polygon = part_to_place.polygon
+                
+                # The 'point' is where the centroid should be.
+                dx = point.x - rotated_poly_centroid.x
+                dy = point.y - rotated_poly_centroid.y
+                part_to_place.polygon = translate(rotated_part_poly, xoff=dx, yoff=dy)
+                
+                self._draw_debug_poly(part_to_place.polygon, f"hole_test_{point.x:.0f}_{point.y:.0f}")
+                
+                is_valid = self._is_placement_valid_with_holes(part_to_place.polygon, sheet, part_to_place)
+                
+                part_to_place.polygon = original_part_polygon # Restore the polygon immediately.
+                if is_valid:
                     metric = point.y * self._bin_width + point.x
                     if metric < best_placement_info['metric']:
                         best_placement_info = {'x': point.x, 'y': point.y, 'angle': angle, 'metric': metric}
-                        FreeCAD.Console.PrintMessage(f"MINKOWSKI:  - Found new best candidate placement at ({point.x:.2f}, {point.y:.2f}) with angle {angle:.1f}\n")
-                    
-                    # Optimization: Since we found a valid placement for this rotation, we can stop searching.
-                    # The first one found is the best due to the sorting.
-                    break
+                    placement_found_for_angle = True
+                    break # Found the best spot in a hole for this angle
+            
+            if placement_found_for_angle:
+                continue # A hole was filled, move to the next rotation to see if it's even better.
+
+            # --- Stage 2: If no hole fit, check external positions ---
+            external_candidates.sort(key=lambda p: (p.y, p.x))
+            for point in external_candidates:
+                original_part_polygon = part_to_place.polygon
+                
+                # The 'point' is where the centroid should be.
+                dx = point.x - rotated_poly_centroid.x
+                dy = point.y - rotated_poly_centroid.y
+                part_to_place.polygon = translate(rotated_part_poly, xoff=dx, yoff=dy)
+
+                self._draw_debug_poly(part_to_place.polygon, f"ext_test_{point.x:.0f}_{point.y:.0f}")
+                
+                is_valid = self._is_placement_valid_with_holes(part_to_place.polygon, sheet, part_to_place)
+                
+                part_to_place.polygon = original_part_polygon # Restore the polygon immediately.
+                if is_valid:
+                    metric = point.y * self._bin_width + point.x
+                    if metric < best_placement_info['metric']:
+                        best_placement_info = {'x': point.x, 'y': point.y, 'angle': angle, 'metric': metric}
+                    placement_found_for_angle = True
+                    break # Found the best external spot for this angle
 
         # After checking all rotations and their candidates, apply the best one found.
         if best_placement_info['x'] is not None:
             best_x = best_placement_info['x']
             best_y = best_placement_info['y']
             best_angle = best_placement_info['angle']
-            
-            FreeCAD.Console.PrintMessage(f"MINKOWSKI: Finalizing placement for '{part_to_place.id}' at ({best_x:.2f}, {best_y:.2f}), angle {best_angle:.1f}\n")
             
             # Apply the best found transformation to the actual part object.
             part_to_place.set_rotation(best_angle, reposition=False)
@@ -134,38 +180,75 @@ class MinkowskiNester(BaseNester):
 
             return part_to_place
 
-        FreeCAD.Console.PrintWarning(f"MINKOWSKI: No valid placement found for '{part_to_place.id}' on this sheet after all checks.\n")
         return None
+
+    def _is_placement_valid_with_holes(self, polygon_to_check, sheet, part_to_ignore):
+        """
+        Custom validation function for Minkowski that correctly handles holes.
+        This logic is self-contained and does not modify the Sheet class.
+        """
+        # 1. Check containment within sheet boundaries
+        bin_polygon = Polygon([(0, 0), (sheet.width, 0), (sheet.width, sheet.height), (0, sheet.height)])
+        if not bin_polygon.contains(polygon_to_check):
+            return False
+
+        # 2. Manually build the union of placed parts, respecting part_to_ignore
+        other_parts_polygons = [p.shape.polygon for p in sheet.parts if p.shape is not part_to_ignore and p.shape.polygon]
+        if not other_parts_polygons:
+            return True # No other parts to collide with
+
+        union_of_other_parts = unary_union(other_parts_polygons)
+
+        # --- Advanced Collision Check with Hole Support ---
+        if not polygon_to_check.intersects(union_of_other_parts):
+            return True # No intersection at all, definitely valid.
+
+        # There is an intersection. Check if it's a valid placement inside a hole.
+        intersection_area = polygon_to_check.intersection(union_of_other_parts).area
+        if intersection_area < 1e-9:
+            return True # Negligible intersection is likely just touching, which is allowed.
+
+        # The placement is only valid if the part is entirely contained within one of the holes.
+        if union_of_other_parts.geom_type == 'Polygon':
+            return any(hole.contains(polygon_to_check) for hole in union_of_other_parts.interiors)
+        elif union_of_other_parts.geom_type == 'MultiPolygon':
+            return any(
+                hole.contains(polygon_to_check)
+                for poly in union_of_other_parts.geoms
+                for hole in poly.interiors
+            )
+        return False
 
     def _get_candidate_positions(self, nfps, part_to_place_poly=None):
         """
         Generates candidate placement points from the vertices of the No-Fit Polygon.
         These are the most likely points for an optimal, touching placement.
         """
-        from shapely.geometry import Point, MultiPoint
-        points = []
+        from shapely.geometry import Point, MultiPoint # type: ignore
+        external_points = []
+        hole_points = []
 
-        # Add the sheet origin as a primary candidate.
+        # Add the sheet origin as a primary external candidate.
         # This is where the part's centroid would be placed.
         if part_to_place_poly:
             min_x, min_y, max_x, max_y = part_to_place_poly.bounds
             # Add the point that would place the part's bottom-left at the origin
-            points.append(Point(-min_x, -min_y))
+            external_points.append(Point(-min_x, -min_y))
 
         # The vertices of each individual NFP are the primary candidates for placement of the part's reference point.
         # These represent the locations where the part can touch an existing part.
         for nfp in nfps:
             if nfp.geom_type == 'Polygon':
-                points.extend([Point(c) for c in nfp.exterior.coords])
+                external_points.extend([Point(c) for c in nfp.exterior.coords])
                 # Also add points from the holes in the NFP, which correspond to
                 # valid placements inside the holes of the original parts.
                 for interior in nfp.interiors:
-                    points.extend([Point(c) for c in interior.coords])
+                    hole_points.extend([Point(c) for c in interior.coords])
             elif nfp.geom_type == 'MultiPolygon':
                 for poly in nfp.geoms:
-                    points.extend([Point(c) for c in poly.exterior.coords])
+                    external_points.extend([Point(c) for c in poly.exterior.coords])
                     for interior in poly.interiors:
-                        points.extend([Point(c) for c in interior.coords])
+                        hole_points.extend([Point(c) for c in interior.coords])
 
         # The old implementation also tried to match every vertex of the new part
         # with every vertex of the NFP. This created a massive number of candidates
@@ -177,14 +260,20 @@ class MinkowskiNester(BaseNester):
         # --- Pre-filter candidate points ---
         # Remove points that are guaranteed to be outside the sheet boundaries.
         # This is a huge performance optimization.
-        unique_points = list(MultiPoint(points).geoms)
-        valid_candidates = []
-        for p in unique_points:
+        unique_externals = list(MultiPoint(external_points).geoms)
+        valid_external_candidates = []
+        for p in unique_externals:
             # A simple check: if the candidate point itself is outside the bin, it's invalid.
             if 0 <= p.x <= self._bin_width and 0 <= p.y <= self._bin_height:
-                valid_candidates.append(p)
+                valid_external_candidates.append(p)
 
-        return valid_candidates
+        unique_holes = list(MultiPoint(hole_points).geoms)
+        valid_hole_candidates = []
+        for p in unique_holes:
+            if 0 <= p.x <= self._bin_width and 0 <= p.y <= self._bin_height:
+                valid_hole_candidates.append(p)
+
+        return valid_hole_candidates, valid_external_candidates
 
     def _calculate_and_cache_nfp(self, poly_A_master, angle_A, poly_B_master, angle_B, cache_key):
         """Calculates the NFP between two polygons and stores it in the cache."""
@@ -201,20 +290,26 @@ class MinkowskiNester(BaseNester):
         if poly_A_master.interiors:
             poly_B_rotated = rotate(poly_B_master, angle_B, origin='centroid')
             for hole in poly_A_master.interiors:
-                hole_poly = Polygon(hole)
-                hole_poly_rotated = rotate(hole_poly, angle_A, origin='centroid')
-                # Basic check: if B's area is larger than the hole's, it can't fit.
-                if poly_B_rotated.area < hole_poly_rotated.area:
-                    # The Minkowski sum of the hole and reflected B gives an "In-Fit Polygon" (IFP).
-                    ifp = self._minkowski_sum(hole_poly, angle_A, False, poly_B_master, angle_B, True)
-                    if ifp and ifp.area > 0:
-                        nfp_interiors.append(ifp.exterior)
+                hole_poly_unrotated = Polygon(hole)
+                hole_poly_rotated = rotate(hole_poly_unrotated, angle_A, origin=poly_A_master.centroid)
+                
+                # Check if the bounding box of the part to place can even fit inside the hole's bounding box.
+                # This is a fast check to avoid expensive calculations.
+                if (poly_B_rotated.bounds[2] - poly_B_rotated.bounds[0] < hole_poly_rotated.bounds[2] - hole_poly_rotated.bounds[0] and
+                    poly_B_rotated.bounds[3] - poly_B_rotated.bounds[1] < hole_poly_rotated.bounds[3] - hole_poly_rotated.bounds[1]):
+                    
+                    # To find where B can fit inside the hole, we calculate the Minkowski DIFFERENCE.
+                    # This is equivalent to Hole + (-Part), where -Part is reflected.
+                    ifp_raw = self._minkowski_sum(hole_poly_unrotated, angle_A, False, poly_B_master, angle_B, True, rot_origin1=poly_A_master.centroid)
+                    
+                    if ifp_raw and ifp_raw.area > 0 and ifp_raw.geom_type == 'Polygon':
+                        nfp_interiors.append(ifp_raw.exterior)
         
         master_nfp = Polygon(nfp_exterior.exterior, nfp_interiors) if nfp_exterior and nfp_exterior.area > 0 else None
         self._nfp_cache[cache_key] = master_nfp
         return master_nfp
 
-    def _minkowski_sum(self, master_poly1, angle1, reflect1, master_poly2, angle2, reflect2):
+    def _minkowski_sum(self, master_poly1, angle1, reflect1, master_poly2, angle2, reflect2, rot_origin1=None, rot_origin2=None):
         """
         Computes the Minkowski sum of two polygons.
         It uses the pre-cached decomposition of the master polygons and rotates
@@ -230,14 +325,16 @@ class MinkowskiNester(BaseNester):
         # --- Transform Convex Parts ---
         poly1_convex_transformed = []
         for p in poly1_convex_parts:
-            p_new = rotate(p, angle1, origin='centroid')
+            rot_origin = rot_origin1 if rot_origin1 is not None else 'centroid'
+            p_new = rotate(p, angle1, origin=rot_origin)
             if reflect1:
                 p_new = scale(p_new, xfact=-1.0, yfact=-1.0, origin=(0, 0))
             poly1_convex_transformed.append(p_new)
 
         poly2_convex_transformed = []
         for p in poly2_convex_parts:
-            p_new = rotate(p, angle2, origin='centroid')
+            rot_origin = rot_origin2 if rot_origin2 is not None else 'centroid'
+            p_new = rotate(p, angle2, origin=rot_origin)
             if reflect2:
                 p_new = scale(p_new, xfact=-1.0, yfact=-1.0, origin=(0, 0))
             poly2_convex_transformed.append(p_new)

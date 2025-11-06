@@ -3,9 +3,6 @@ Notes for Nesting Workbench
 
 #TODO
 
-Fix annealing step in gravity
-
-shapes do not continune in gravity direction after annealing step
 
 Need a way to cancel simulation. If nest button pressed twice, first instance continues to run.
 
@@ -16,6 +13,9 @@ maximize overlap area
 check bounds overlap area
 
  Fix Minkowski nesting small objects in voids
+
+ simulate Minkowski
+ set Minkowski as defaulkt algo
 
  Minkowski performance
 
