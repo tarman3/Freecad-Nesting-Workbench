@@ -485,37 +485,56 @@ class MinkowskiNester(BaseNester):
     def _minkowski_difference(self, master_poly1, angle1, master_poly2, angle2):
         """
         Computes the Inner-Fit Polygon for master_poly2 inside master_poly1.
-        This is done by calculating the No-Fit Polygon (NFP) of the two shapes,
-        and then extracting the INTERIORS (holes) of that NFP.
-        This is A + (-B). If B is not convex, this is (A - B1) INTERSECT (A - B2) ...
+        The IFP represents valid positions for poly2's CENTROID where poly2 fits inside poly1.
+        This is Hole - Part. If Part is not convex, this is (Hole - P1) ∩ (Hole - P2) ...
         """
         if not master_poly1 or master_poly1.is_empty or not master_poly2 or master_poly2.is_empty:
             return None
         
-        # The hole (master_poly1) is assumed to be convex.
+        # Transform both polygons around their centroids
         poly1_transformed = rotate(master_poly1, angle1, origin='centroid')
-        
-        # The moving part (master_poly2) may be non-convex and needs decomposition.
         poly2_convex_parts = self._decompose_if_needed(master_poly2)
+        poly2_convex_transformed = [rotate(p, angle2, origin='centroid') for p in poly2_convex_parts]
         
-        # CRITICAL: Order matters! First rotate, THEN reflect around origin.
-        poly2_convex_transformed = [
-            scale(rotate(p, angle2, origin='centroid'), xfact=-1.0, yfact=-1.0, origin=(0, 0))
-            for p in poly2_convex_parts
-        ]
+        # Translate both polygons so poly2's centroid is at the origin
+        # This makes the Minkowski difference compute placement zones relative to poly2's centroid
+        from shapely.affinity import translate
+        from shapely.geometry import Polygon
         
-        # Calculate the pairwise Minkowski sum (A + (-Bi)) for each piece of the reflected moving part.
-        pairwise_sums = [self._minkowski_sum_convex(poly1_transformed, p2) for p2 in poly2_convex_transformed]
+        poly1_exterior_only = Polygon(poly1_transformed.exterior.coords)
         
-        # The final difference is the INTERSECTION of all these pairwise sums.
-        if not pairwise_sums:
+        pairwise_diffs = []
+        for i, p2 in enumerate(poly2_convex_transformed):
+            # Get poly2's centroid
+            p2_centroid = p2.centroid
+            
+            # Translate poly2 so its centroid is at origin
+            p2_at_origin = translate(p2, xoff=-p2_centroid.x, yoff=-p2_centroid.y)
+            
+        for i, p2 in enumerate(poly2_convex_transformed):            
+            # Compute Minkowski difference
+            diff = self._minkowski_difference_convex(poly1_exterior_only, p2_at_origin)
+            diff = self._minkowski_difference_convex(poly1_exterior_only, p2)
+            if diff:
+                self._draw_debug_poly(diff, f"pairwise_diff_{i}")
+            pairwise_diffs.append(diff)
+        
+        if not pairwise_diffs:
             return None
+        # The result of the difference is at the origin. We need to translate it
+        # to the position of the hole's centroid.
         
-        final_difference = pairwise_sums[0]
-        for i in range(1, len(pairwise_sums)):
-            final_difference = final_difference.intersection(pairwise_sums[i])
+        # Intersection of all pairwise differences
+        final_difference = pairwise_diffs[0]
+        for i in range(1, len(pairwise_diffs)):
+            final_difference = final_difference.intersection(pairwise_diffs[i])
         
         return final_difference
+        # The IFP is calculated at the origin. We must translate it to the hole's location.
+        # The hole's polygon (master_poly1) is already correctly positioned relative to the
+        # placed part's origin, so we use its centroid for the translation.
+        hole_centroid = master_poly1.centroid
+        return translate(final_difference, xoff=hole_centroid.x, yoff=hole_centroid.y)
 
     def _minkowski_sum(self, master_poly1, angle1, reflect1, master_poly2, angle2, reflect2, rot_origin1=None, rot_origin2=None):
         """
@@ -601,3 +620,20 @@ class MinkowskiNester(BaseNester):
         
         # The convex hull of these summed points is the Minkowski sum.
         return MultiPoint(sum_vertices).convex_hull
+        # The convex hull of these summed points is the Minkowski sum.
+        return MultiPoint(sum_vertices).convex_hull
+
+    def _minkowski_difference_convex(self, poly1, poly2):
+        """Computes the Minkowski difference of two convex polygons, poly1 - poly2."""
+        from shapely.geometry import MultiPoint
+        v1 = poly1.exterior.coords
+        v2 = poly2.exterior.coords
+        # The difference A - B is the sum A + (-B), where -B is B reflected through the origin.
+        diff_vertices = []
+        for p1 in v1:
+            for p2 in v2:
+                diff_vertices.append((p1[0] - p2[0], p1[1] - p2[1]))
+        # The convex hull of these vertex differences is the Minkowski difference.
+        if not diff_vertices:
+            return None
+        return MultiPoint(diff_vertices).convex_hull
