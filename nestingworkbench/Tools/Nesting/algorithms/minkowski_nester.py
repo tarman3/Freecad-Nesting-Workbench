@@ -511,18 +511,14 @@ class MinkowskiNester(BaseNester):
             # Translate poly2 so its centroid is at origin
             p2_at_origin = translate(p2, xoff=-p2_centroid.x, yoff=-p2_centroid.y)
             
-        for i, p2 in enumerate(poly2_convex_transformed):            
             # Compute Minkowski difference
             diff = self._minkowski_difference_convex(poly1_exterior_only, p2_at_origin)
-            diff = self._minkowski_difference_convex(poly1_exterior_only, p2)
             if diff:
                 self._draw_debug_poly(diff, f"pairwise_diff_{i}")
             pairwise_diffs.append(diff)
         
         if not pairwise_diffs:
             return None
-        # The result of the difference is at the origin. We need to translate it
-        # to the position of the hole's centroid.
         
         # Intersection of all pairwise differences
         final_difference = pairwise_diffs[0]
@@ -530,11 +526,6 @@ class MinkowskiNester(BaseNester):
             final_difference = final_difference.intersection(pairwise_diffs[i])
         
         return final_difference
-        # The IFP is calculated at the origin. We must translate it to the hole's location.
-        # The hole's polygon (master_poly1) is already correctly positioned relative to the
-        # placed part's origin, so we use its centroid for the translation.
-        hole_centroid = master_poly1.centroid
-        return translate(final_difference, xoff=hole_centroid.x, yoff=hole_centroid.y)
 
     def _minkowski_sum(self, master_poly1, angle1, reflect1, master_poly2, angle2, reflect2, rot_origin1=None, rot_origin2=None):
         """
@@ -620,20 +611,31 @@ class MinkowskiNester(BaseNester):
         
         # The convex hull of these summed points is the Minkowski sum.
         return MultiPoint(sum_vertices).convex_hull
-        # The convex hull of these summed points is the Minkowski sum.
-        return MultiPoint(sum_vertices).convex_hull
 
     def _minkowski_difference_convex(self, poly1, poly2):
-        """Computes the Minkowski difference of two convex polygons, poly1 - poly2."""
+        """
+        Computes the erosion of poly1 by poly2, which is the Inner-Fit Polygon.
+        This is NOT the Minkowski Difference, which would enlarge the polygon.
+        """
         from shapely.geometry import MultiPoint
-        v1 = poly1.exterior.coords
-        v2 = poly2.exterior.coords
-        # The difference A - B is the sum A + (-B), where -B is B reflected through the origin.
-        diff_vertices = []
-        for p1 in v1:
-            for p2 in v2:
-                diff_vertices.append((p1[0] - p2[0], p1[1] - p2[1]))
-        # The convex hull of these vertex differences is the Minkowski difference.
-        if not diff_vertices:
+        from shapely.affinity import translate
+
+        if not poly1 or poly1.is_empty or not poly2 or poly2.is_empty:
             return None
-        return MultiPoint(diff_vertices).convex_hull
+
+        # Erosion P ⊖ Q is the intersection of P translated by each of the negated vertices of Q.
+        v2 = poly2.exterior.coords
+        
+        # Start with the first translated polygon
+        first_translation = translate(poly1, xoff=-v2[0][0], yoff=-v2[0][1])
+        
+        # Intersect with the rest
+        eroded_poly = first_translation
+        for i in range(1, len(v2)):
+            translated_poly = translate(poly1, xoff=-v2[i][0], yoff=-v2[i][1])
+            eroded_poly = eroded_poly.intersection(translated_poly)
+            # If the intersection is empty, we can stop early
+            if eroded_poly.is_empty:
+                return None
+        
+        return eroded_poly
