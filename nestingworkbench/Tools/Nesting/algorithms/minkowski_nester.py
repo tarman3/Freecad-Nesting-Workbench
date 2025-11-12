@@ -139,7 +139,7 @@ class MinkowskiNester(BaseNester):
         return individual_nfps
 
     def _find_best_placement(
-        self, part_to_place, sheet, angle, rotated_part_poly, individual_nfps
+        self, part_to_place, sheet, angle, rotated_part_poly, individual_nfps, union_of_other_parts
     ):
         """Finds the best placement for a given rotation."""
         best_placement_info = {'metric': float('inf')}
@@ -152,10 +152,6 @@ class MinkowskiNester(BaseNester):
         # We need the polygon at the current rotation to test placements.
         if not rotated_part_poly:
             return best_placement_info
-
-        # OPTIMIZATION: Pre-calculate the union of parts on the sheet once.
-        other_parts_polygons = [p.shape.polygon for p in sheet.parts if p.shape is not part_to_place and p.shape.polygon]
-        union_of_other_parts = unary_union(other_parts_polygons) if other_parts_polygons else None
 
         # 2. Find the best valid placement for this rotation, prioritizing holes.
         # The candidate points are for the centroid, so we need the centroid of the rotated part poly
@@ -252,7 +248,7 @@ class MinkowskiNester(BaseNester):
             individual_nfps = self._generate_nfps(part_to_place, sheet, angle)
 
             placement_info = self._find_best_placement(
-                part_to_place, sheet, angle, rotated_part_poly, individual_nfps
+                part_to_place, sheet, angle, rotated_part_poly, individual_nfps, union_of_other_parts
             )
 
             if placement_info and placement_info.get('metric') is not None and placement_info.get('metric') < best_placement_info.get('metric', float('inf')):
@@ -327,20 +323,20 @@ class MinkowskiNester(BaseNester):
             # Add the point that would place the part's bottom-left at the origin
             external_points.append(Point(-min_x, -min_y))
 
+        # Helper to discretize a line string (an edge of the polygon)
+        def discretize_edge(line):
+            points = [Point(line.coords[0])]
+            length = line.length
+            if length > self.step_size:
+                num_segments = int(length / self.step_size)
+                for i in range(1, num_segments):
+                    points.append(line.interpolate(float(i) / num_segments, normalized=True))
+            points.append(Point(line.coords[-1]))
+            return points
+
         # The vertices of each individual NFP are the primary candidates for placement of the part's reference point.
         # These represent the locations where the part can touch an existing part.
         for nfp in nfps:
-            # Helper to discretize a line string (an edge of the polygon)
-            def discretize_edge(line):
-                points = [Point(line.coords[0])]
-                length = line.length
-                if length > self.step_size:
-                    num_segments = int(length / self.step_size)
-                    for i in range(1, num_segments):
-                        points.append(line.interpolate(float(i) / num_segments, normalized=True))
-                points.append(Point(line.coords[-1]))
-                return points
-
             if nfp.geom_type == 'Polygon':
                 external_points.extend(discretize_edge(nfp.exterior))
                 for interior in nfp.interiors:
@@ -390,7 +386,8 @@ class MinkowskiNester(BaseNester):
                 # Check if the bounding box of the part to place can even fit inside the hole's bounding box.
                 # This is a fast check to avoid expensive calculations.
                 if (poly_B_rotated.bounds[2] - poly_B_rotated.bounds[0] < hole_poly_rotated.bounds[2] - hole_poly_rotated.bounds[0] and
-                    poly_B_rotated.bounds[3] - poly_B_rotated.bounds[1] < hole_poly_rotated.bounds[3] - hole_poly_rotated.bounds[1]):
+                    poly_B_rotated.bounds[3] - poly_B_rotated.bounds[1] < hole_poly_rotated.bounds[3] - hole_poly_rotated.bounds[1] and
+                        poly_B_rotated.area < hole_poly_rotated.area):
                     
                     # --- Correct IFP Calculation using Minkowski Difference ---
                     ifp_raw = self._minkowski_difference(hole_poly_rotated, 0, poly_B_master, angle_B)
