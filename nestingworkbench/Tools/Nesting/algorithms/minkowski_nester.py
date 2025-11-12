@@ -37,12 +37,13 @@ class MinkowskiNester(BaseNester):
         Overrides the base class method to use the Minkowski-specific validation
         that correctly handles placements within holes.
         """
-        placed_part_shape = self._try_place_part_on_sheet(part, sheet)
+        other_parts_polygons = [p.shape.polygon for p in sheet.parts if p.shape.polygon]
+        union_of_other_parts = unary_union(other_parts_polygons) if other_parts_polygons else None
+        
+        placed_part_shape = self._try_place_part_on_sheet(part, sheet, union_of_other_parts)
 
         # Final validation using the Minkowski-aware checker.
         if placed_part_shape:
-            other_parts_polygons = [p.shape.polygon for p in sheet.parts if p.shape is not placed_part_shape and p.shape.polygon]
-            union_of_other_parts = unary_union(other_parts_polygons) if other_parts_polygons else None
             if self._is_placement_valid_with_holes(
                 placed_part_shape.polygon, sheet, union_of_other_parts
             ):
@@ -218,7 +219,7 @@ class MinkowskiNester(BaseNester):
 
         return best_placement_info
 
-    def _try_place_part_on_sheet(self, part_to_place, sheet):
+    def _try_place_part_on_sheet(self, part_to_place, sheet, union_of_other_parts):
         """
         Tries to place a single shape on a given sheet using Minkowski sums.
         Returns the placed shape on success, None on failure.
@@ -367,6 +368,8 @@ class MinkowskiNester(BaseNester):
         """Calculates the NFP between two polygons and stores it in the cache."""
         if Shape.nfp_cache.get(cache_key):
             return Shape.nfp_cache.get(cache_key)
+
+        self.log(f"      - Generating new NFP for '{shape_A.id}' ({angle_A:.1f} deg) and '{part_to_place.id}' ({angle_B:.1f} deg)")
 
         poly_A_master = shape_A.original_polygon
         # --- NFP Calculation with Hole Support ---

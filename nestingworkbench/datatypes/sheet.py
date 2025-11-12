@@ -10,7 +10,7 @@ import Part
 
 try:
     from shapely.geometry import Polygon
-    from shapely.ops import unary_union
+    # from shapely.ops import unary_union
     SHAPELY_AVAILABLE = True
 except ImportError:
     SHAPELY_AVAILABLE = False
@@ -33,9 +33,7 @@ class Sheet:
         self.width = width
         self.height = height
         self.parts = [] # List of PlacedPart objects
-        self._union_of_placed_parts = None
         self.spacing = spacing
-        self._union_is_dirty = True
         self.parent_group_name = None # Will store the name of the top-level layout group
 
     def __repr__(self):
@@ -50,9 +48,8 @@ class Sheet:
         return len(self.parts)
 
     def add_part(self, placed_part):
-        """Adds a part to the sheet and marks the union cache as dirty."""
+        """Adds a part to the sheet."""
         self.parts.append(placed_part)
-        self._union_is_dirty = True
 
     def get_origin(self):
         """
@@ -88,27 +85,16 @@ class Sheet:
         
         return (total_part_area / sheet_area) * 100.0
 
-    def get_union_of_placed_parts(self, force_recalculate=False, part_to_ignore=None):
-        """Returns a cached union of all parts on the sheet, recalculating if necessary."""
-        if self._union_is_dirty or force_recalculate:
-            polygons_to_union = []
-            for p in self.parts:
-                # Exclude the part to ignore from the union calculation
-                if p.shape != part_to_ignore and p.shape and p.shape.polygon:
-                    polygons_to_union.append(p.shape.polygon)
-            self._union_of_placed_parts = unary_union(polygons_to_union) if polygons_to_union else None
-            self._union_is_dirty = False
-        return self._union_of_placed_parts
 
-    def is_placement_valid(self, shape_to_check, recalculate_union=False, part_to_ignore=None):
+
+    def is_placement_valid(self, shape_to_check, part_to_ignore=None):
         """
         Checks if a shape's placement is valid on this sheet, considering both
         containment and collision with existing parts.
 
         Args:
             shape_to_check (Shape): The shape instance with its bounds polygon at the desired location.
-            recalculate_union (bool): If True, forces a recalculation of the union of placed parts.
-            part_to_ignore (Shape, optional): A specific shape to exclude from the union calculation.
+            part_to_ignore (Shape, optional): A specific shape to exclude from the collision check.
 
         Returns:
             bool: True if the placement is valid, False otherwise.
@@ -121,24 +107,22 @@ class Sheet:
         if not bin_polygon.contains(shape_to_check.polygon):
             return False
 
-        union_of_placed_parts = self.get_union_of_placed_parts(force_recalculate=False, part_to_ignore=part_to_ignore)
-
         # 2. Check for collision with other parts
-        if union_of_placed_parts is None or union_of_placed_parts.is_empty:
-            return True # No parts to collide with
+        for placed_part in self.parts:
+            if placed_part.shape != part_to_ignore and placed_part.shape and placed_part.shape.polygon:
+                if shape_to_check.polygon.intersects(placed_part.shape.polygon):
+                    return False
+        
+        return True
 
-        collides = shape_to_check.polygon.intersects(union_of_placed_parts)
-        return not collides
-
-    def is_placement_valid_polygon(self, polygon_to_check, recalculate_union=False, part_to_ignore=None):
+    def is_placement_valid_polygon(self, polygon_to_check, part_to_ignore=None):
         """
         Checks if a shapely polygon's placement is valid on this sheet.
         This version is for checking raw polygons without a full Shape object.
 
         Args:
             polygon_to_check (shapely.geometry.Polygon): The polygon at the desired location.
-            recalculate_union (bool): If True, forces a recalculation of the union of placed parts.
-            part_to_ignore (Shape, optional): A specific shape to exclude from the union calculation.
+            part_to_ignore (Shape, optional): A specific shape to exclude from the collision check.
 
         Returns:
             bool: True if the placement is valid, False otherwise.
@@ -149,10 +133,12 @@ class Sheet:
         if not bin_polygon.contains(polygon_to_check):
             return False
 
-        union_of_placed_parts = self.get_union_of_placed_parts(force_recalculate=recalculate_union, part_to_ignore=part_to_ignore)
-        if union_of_placed_parts is None or union_of_placed_parts.is_empty:
-            return True
-        return not polygon_to_check.intersects(union_of_placed_parts)
+        for placed_part in self.parts:
+            if placed_part.shape != part_to_ignore and placed_part.shape and placed_part.shape.polygon:
+                if polygon_to_check.intersects(placed_part.shape.polygon):
+                    return False
+        
+        return True
 
     def draw(self, doc, ui_params, parent_group=None, transient_part=None):
         """
