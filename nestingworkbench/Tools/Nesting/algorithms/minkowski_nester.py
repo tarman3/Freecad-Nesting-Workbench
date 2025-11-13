@@ -4,7 +4,6 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.affinity import translate, rotate, scale
 from shapely.ops import unary_union
 from PySide import QtGui
-import concurrent.futures
 
 import FreeCAD
 from ....datatypes.shape import Shape
@@ -16,10 +15,11 @@ import Part
 
 class MinkowskiNester(BaseNester):
     """Nesting algorithm using Minkowski sums to create No-Fit Polygons."""
-    def __init__(self, width, height, rotation_steps=1, **kwargs):
+    def __init__(self, width, height, rotation_steps=1, discretize_edges=True, **kwargs):
         super().__init__(width, height, rotation_steps, **kwargs)
         self._debug_group = None
         self.log_callback = kwargs.get("log_callback")
+        self.discretize_edges = discretize_edges
 
     def nest(self, parts):
         """Overrides the base nester to add Minkowski-specific cleanup."""
@@ -88,39 +88,58 @@ class MinkowskiNester(BaseNester):
     def _generate_nfps(self, part_to_place, sheet, angle):
         """Generates the No-Fit Polygons for a given part and sheet."""
         individual_nfps = []
-        
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = {executor.submit(self._calculate_and_cache_nfp, placed_part.shape, placed_part.angle, part_to_place, angle, (placed_part.shape.source_freecad_object.Label, placed_part.angle, part_to_place.source_freecad_object.Label, angle)): placed_part for placed_part in sheet.parts}
+        for placed_part in sheet.parts:
+            placed_part_master_label = placed_part.shape.source_freecad_object.Label
+            part_to_place_master_label = part_to_place.source_freecad_object.Label
+            placed_part_angle = placed_part.angle
 
-            for future in concurrent.futures.as_completed(futures):
-                placed_part = futures[future]
-                master_nfp = future.result()
-                if master_nfp:
-                    # The NFP's reference point is the sum of the reference points.
-                    # We translate the EXTERIOR of the NFP by the placed part's centroid to position it correctly on the sheet.
-                    placed_part_centroid = placed_part.shape.centroid
+            cache_key = (
+                placed_part_master_label,
+                placed_part_angle,
+                part_to_place_master_label,
+                angle,
+            )
+            nfp_data = Shape.nfp_cache.get(cache_key)
 
-                    # The exterior represents the "no-go" zone around the placed part.
-                    translated_exterior = translate(
-                        Polygon(master_nfp.exterior),
-                        xoff=placed_part_centroid.x,
-                        yoff=placed_part_centroid.y,
-                    )
-                    
-                    # The interiors represent the "go-zones" (holes). These are already in the correct
-                    # coordinate space relative to the placed part's centroid, so they do NOT need to be translated again.
-                    # We must, however, translate them to the final position of the placed part on the sheet.
-                    translated_interiors = []
-                    for i, interior in enumerate(master_nfp.interiors):
-                        ifp = Polygon(interior)
-                        translated_ifp = translate(ifp, xoff=placed_part_centroid.x, yoff=placed_part_centroid.y)
-                        translated_interiors.append(translated_ifp)
-                        
-                    individual_nfps.append(
-                        Polygon(
-                            translated_exterior.exterior, [p.exterior for p in translated_interiors]
-                        )
-                    )
+            if nfp_data is None:
+                # Cache miss. Calculate the NFP now and store it.
+                nfp_data = self._calculate_and_cache_nfp(
+                    placed_part.shape, # Pass the full Shape object
+                    placed_part_angle,
+                    part_to_place,
+                    angle,
+                    cache_key,
+                )
+
+            if nfp_data:
+                master_nfp = nfp_data["polygon"]
+                placed_part_centroid = placed_part.shape.centroid
+                xoff, yoff = placed_part_centroid.x, placed_part_centroid.y
+
+                # The exterior represents the "no-go" zone around the placed part.
+                translated_exterior = translate(
+                    Polygon(master_nfp.exterior), xoff=xoff, yoff=yoff
+                )
+                
+                translated_interiors = []
+                for i, interior in enumerate(master_nfp.interiors):
+                    ifp = Polygon(interior)
+                    translated_ifp = translate(ifp, xoff=xoff, yoff=yoff)
+                    translated_interiors.append(translated_ifp)
+                
+                # Translate the cached points
+                translated_exterior_points = [Point(p.x + xoff, p.y + yoff) for p in nfp_data["exterior_points"]]
+                translated_interior_points = []
+                for interior_points in nfp_data["interior_points"]:
+                    translated_interior_points.append([Point(p.x + xoff, p.y + yoff) for p in interior_points])
+
+                individual_nfps.append({
+                    "polygon": Polygon(
+                        translated_exterior.exterior, [p.exterior for p in translated_interiors]
+                    ),
+                    "exterior_points": translated_exterior_points,
+                    "interior_points": translated_interior_points,
+                })
         return individual_nfps
 
     def _find_best_placement(
@@ -284,11 +303,24 @@ class MinkowskiNester(BaseNester):
             )
         return False
 
+    def _discretize_edge(self, line):
+        """Helper to discretize a line string (an edge of the polygon)."""
+        from shapely.geometry import Point
+        points = [Point(line.coords[0])]
+        length = line.length
+        if length > self.step_size:
+            num_segments = int(length / self.step_size)
+            for i in range(1, num_segments):
+                points.append(line.interpolate(float(i) / num_segments, normalized=True))
+        points.append(Point(line.coords[-1]))
+        return points
+
     def _get_candidate_positions(self, nfps, part_to_place_poly=None):
         """
         Generates candidate placement points from the vertices of the No-Fit Polygon.
         These are the most likely points for an optimal, touching placement.
         """
+        self.log("      - Getting candidate positions...")
         from shapely.geometry import Point, MultiPoint # type: ignore
         external_points = []
         hole_points = []
@@ -300,24 +332,12 @@ class MinkowskiNester(BaseNester):
             # Add the point that would place the part's bottom-left at the origin
             external_points.append(Point(-min_x, -min_y))
 
-        # Helper to discretize a line string (an edge of the polygon)
-        def discretize_edge(line):
-            points = [Point(line.coords[0])]
-            length = line.length
-            if length > self.step_size:
-                num_segments = int(length / self.step_size)
-                for i in range(1, num_segments):
-                    points.append(line.interpolate(float(i) / num_segments, normalized=True))
-            points.append(Point(line.coords[-1]))
-            return points
-
         # The vertices of each individual NFP are the primary candidates for placement of the part's reference point.
         # These represent the locations where the part can touch an existing part.
-        for nfp in nfps:
-            if nfp.geom_type == 'Polygon':
-                external_points.extend(discretize_edge(nfp.exterior))
-                for interior in nfp.interiors:
-                    hole_points.extend(discretize_edge(interior))
+        for nfp_data in nfps:
+            external_points.extend(nfp_data["exterior_points"])
+            for interior_points in nfp_data["interior_points"]:
+                hole_points.extend(interior_points)
 
         # --- Pre-filter candidate points ---
         # Remove points that are guaranteed to be outside the sheet boundaries.
@@ -340,37 +360,31 @@ class MinkowskiNester(BaseNester):
     def _calculate_and_cache_nfp(self, shape_A, angle_A, part_to_place, angle_B, cache_key):
         """Calculates the NFP between two polygons and stores it in the cache."""
         with Shape.nfp_cache_lock:
-            if Shape.nfp_cache.get(cache_key):
-                return Shape.nfp_cache.get(cache_key)
+            # The cache might hold the data, so we check here again.
+            cached_nfp_data = Shape.nfp_cache.get(cache_key)
+            if cached_nfp_data:
+                return cached_nfp_data
 
         self.log(f"      - Generating new NFP for '{shape_A.id}' ({angle_A:.1f} deg) and '{part_to_place.id}' ({angle_B:.1f} deg)")
 
         poly_A_master = shape_A.original_polygon
-        # --- NFP Calculation with Hole Support ---
         poly_B_master = part_to_place.original_polygon
-        # The NFP exterior is the minkowski sum of A's exterior and the reflected B.
-        # We pass the master polygons and their transformations directly.
+        
         nfp_exterior = self._minkowski_sum(poly_A_master, angle_A, False, poly_B_master, angle_B, True)
         
         nfp_interiors = []
-        # If A has holes, they become valid placement areas for B.
-        # We must use the hole from the BUFFERED polygon, as this is the actual boundary for placement.
         if poly_A_master and poly_A_master.interiors:
             poly_B_rotated = rotate(poly_B_master, angle_B, origin='centroid')
             for hole in poly_A_master.interiors:
                 hole_poly_unrotated = Polygon(hole.coords)
                 hole_poly_rotated = rotate(hole_poly_unrotated, angle_A, origin=poly_A_master.centroid)
                 
-                # Check if the bounding box of the part to place can even fit inside the hole's bounding box.
-                # This is a fast check to avoid expensive calculations.
                 if (poly_B_rotated.bounds[2] - poly_B_rotated.bounds[0] < hole_poly_rotated.bounds[2] - hole_poly_rotated.bounds[0] and
                     poly_B_rotated.bounds[3] - poly_B_rotated.bounds[1] < hole_poly_rotated.bounds[3] - hole_poly_rotated.bounds[1] and
                         poly_B_rotated.area < hole_poly_rotated.area):
                     
-                    # --- Correct IFP Calculation using Minkowski Difference ---
                     ifp_raw = self._minkowski_difference(hole_poly_rotated, 0, poly_B_master, angle_B)
                     if ifp_raw and ifp_raw.area > 0:
-                        # The result might be a MultiPolygon if the IFP is disjointed.
                         if ifp_raw.geom_type == 'Polygon':
                             nfp_interiors.append(ifp_raw.exterior)
                         elif ifp_raw.geom_type == 'MultiPolygon':
@@ -379,10 +393,20 @@ class MinkowskiNester(BaseNester):
         
         master_nfp = Polygon(nfp_exterior.exterior, nfp_interiors) if nfp_exterior and nfp_exterior.area > 0 else None
         
+        nfp_data = None
+        if master_nfp:
+            nfp_data = {"polygon": master_nfp}
+            if self.discretize_edges:
+                nfp_data["exterior_points"] = self._discretize_edge(master_nfp.exterior)
+                nfp_data["interior_points"] = [self._discretize_edge(interior) for interior in master_nfp.interiors]
+            else:
+                nfp_data["exterior_points"] = [Point(x, y) for x, y in master_nfp.exterior.coords]
+                nfp_data["interior_points"] = [[Point(x, y) for x, y in interior.coords] for interior in master_nfp.interiors]
+
         with Shape.nfp_cache_lock:
-            Shape.nfp_cache[cache_key] = master_nfp
+            Shape.nfp_cache[cache_key] = nfp_data
         
-        return master_nfp
+        return nfp_data
 
     def _minkowski_difference(self, master_poly1, angle1, master_poly2, angle2):
         """
