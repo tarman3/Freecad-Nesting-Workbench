@@ -2,6 +2,9 @@ Notes for Nesting Workbench
 
 
 #TODO
+
+Nesting tool should only work on one layout object.
+
 Place labels on upper bounds of shapes instead of at a fixed position. Leave the input
 as a default (1mm)
 
@@ -24,4 +27,5 @@ check bounds overlap area
 Add color when mouseover
 hotkey for rotation
 
+dragging shape should affect optionally be able to affect other shapes. push them out of the away or magnetize them 
 falloff radius - blender inspired, brush size
