@@ -74,7 +74,7 @@ class GravityNester(BaseNester):
                 self.update_callback(part, sheet)
 
             # Check if the new position is valid.
-            is_valid = sheet.is_placement_valid(part, recalculate_union=False, part_to_ignore=part)
+            is_valid = sheet.is_placement_valid(part, part_to_ignore=part)
             if not is_valid:
                 # Collision detected. Move the part back to its last valid position.
                 part.move(-dx, -dy)

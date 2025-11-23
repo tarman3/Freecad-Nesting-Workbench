@@ -36,7 +36,7 @@ class BaseNester(object):
         placed_part_shape = self._try_place_part_on_sheet(part, sheet)
         
         # Final validation to ensure the returned part is valid before accepting it.
-        if placed_part_shape and sheet.is_placement_valid(placed_part_shape, recalculate_union=False):
+        if placed_part_shape and sheet.is_placement_valid(placed_part_shape):
             sheet_origin = sheet.get_origin()
             placed_part_shape.placement = placed_part_shape.get_final_placement(sheet_origin)
             sheet.add_part(PlacedPart(placed_part_shape))
@@ -116,7 +116,7 @@ class BaseNester(object):
 
         if self.update_callback: self.update_callback(part_to_shake, sheet)
 
-        is_valid_shake = sheet.is_placement_valid(part_to_shake, recalculate_union=False, part_to_ignore=part_to_shake)
+        is_valid_shake = sheet.is_placement_valid(part_to_shake, part_to_ignore=part_to_shake)
         if not is_valid_shake:
             return False # This rotation is not valid.
 
@@ -124,7 +124,7 @@ class BaseNester(object):
         gravity_dx = gravity_direction[0] * self.step_size
         gravity_dy = gravity_direction[1] * self.step_size
         part_to_shake.move(gravity_dx, gravity_dy)
-        can_fall_further = sheet.is_placement_valid(part_to_shake, recalculate_union=False, part_to_ignore=part_to_shake)
+        can_fall_further = sheet.is_placement_valid(part_to_shake, part_to_ignore=part_to_shake)
         part_to_shake.move(-gravity_dx, -gravity_dy) # Revert the temporary move
 
         return can_fall_further
@@ -153,7 +153,7 @@ class BaseNester(object):
         if self.update_callback:
             self.update_callback(part_to_shake, sheet)
 
-        is_valid_shake = sheet.is_placement_valid(part_to_shake, recalculate_union=False, part_to_ignore=part_to_shake)
+        is_valid_shake = sheet.is_placement_valid(part_to_shake, part_to_ignore=part_to_shake)
         if not is_valid_shake:
             return False
 
@@ -162,7 +162,7 @@ class BaseNester(object):
         gravity_dx = current_gravity_direction[0] * self.step_size
         gravity_dy = current_gravity_direction[1] * self.step_size
         part_to_shake.move(gravity_dx, gravity_dy)
-        can_fall_further = sheet.is_placement_valid(part_to_shake, recalculate_union=False, part_to_ignore=part_to_shake)
+        can_fall_further = sheet.is_placement_valid(part_to_shake, part_to_ignore=part_to_shake)
         part_to_shake.move(-gravity_dx, -gravity_dy) # Revert the temporary move
         
         return can_fall_further
@@ -252,12 +252,12 @@ class BaseNester(object):
             test_part.set_rotation(angle, reposition=False)
             test_part.move_to(initial_bl_x, initial_bl_y) # Keep it in the same spot
 
-            if sheet.is_placement_valid(test_part, recalculate_union=False, part_to_ignore=part_to_shake):
+            if sheet.is_placement_valid(test_part, part_to_ignore=part_to_shake):
                 # This rotation is valid. Now, measure how far it can fall.
                 fall_distance = 0
                 while True:
                     test_part.move(gravity_direction[0] * self.step_size, gravity_direction[1] * self.step_size)
-                    if sheet.is_placement_valid(test_part, recalculate_union=False, part_to_ignore=part_to_shake):
+                    if sheet.is_placement_valid(test_part, part_to_ignore=part_to_shake):
                         fall_distance += self.step_size
                     else:
                         break # Collision
