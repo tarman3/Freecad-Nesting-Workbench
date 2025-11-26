@@ -292,6 +292,7 @@ class NestingController:
 
         parts_to_nest = []
         master_shape_obj_map = {} # Maps original FreeCAD object ID to the new master ShapeObject
+        master_geometry_cache = {} # Maps original FreeCAD object ID to the processed Shape wrapper
 
         # This list will hold tuples of (master_container, temp_shape_wrapper) to be sorted later.
         masters_to_place = []
@@ -341,6 +342,7 @@ class NestingController:
                 
                 master_shapes_group.addObject(master_container)
                 master_shape_obj_map[id(master_obj)] = master_shape_obj
+                master_geometry_cache[id(master_obj)] = temp_shape_wrapper
                 masters_to_place.append((master_container, temp_shape_wrapper))
 
             except Exception as e:
@@ -370,15 +372,23 @@ class NestingController:
         for label, original_obj in master_shapes_from_ui.items():
             quantity, part_rotation_steps = quantities.get(label, (0, global_rotation_steps))
             master_shape_obj = master_shape_obj_map.get(id(original_obj))
-            if not master_shape_obj: continue
+            master_wrapper = master_geometry_cache.get(id(original_obj))
+            
+            if not master_shape_obj or not master_wrapper: continue
 
             for i in range(quantity):
                 # Create the in-memory Shape object for the algorithm.
                 shape_instance = Shape(original_obj) # Source is the original user-selected object
-                shape_processor.create_single_nesting_part(shape_instance, original_obj, spacing, boundary_resolution)
+                
+                # Copy geometric properties from the cached master wrapper instead of re-calculating
+                shape_instance.polygon = master_wrapper.polygon
+                shape_instance.original_polygon = master_wrapper.original_polygon
+                shape_instance.unbuffered_polygon = master_wrapper.unbuffered_polygon
+                shape_instance.source_centroid = master_wrapper.source_centroid
+                shape_instance.spacing = spacing
+                
                 shape_instance.instance_num = i + 1
                 shape_instance.id = f"{shape_instance.source_freecad_object.Label}_{shape_instance.instance_num}"
-                shape_instance.spacing = spacing
                 shape_instance.rotation_steps = part_rotation_steps
 
                 # Create a temporary FreeCAD object copy for this instance and link it.
