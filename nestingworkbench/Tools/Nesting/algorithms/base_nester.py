@@ -46,7 +46,7 @@ class BaseNester(object):
         
         return False
 
-    def nest(self, parts):
+    def nest(self, parts, sort=True):
         """
         Main nesting loop. Iterates through parts and calls the subclass's
         sheet nesting implementation until all parts are placed or no more
@@ -55,7 +55,8 @@ class BaseNester(object):
 
         self.parts_to_place = list(parts)
         self.sheets = []
-        self._sort_parts_by_area() # Sorts self.parts_to_place in-place
+        if sort:
+            self._sort_parts_by_area() # Sorts self.parts_to_place in-place
         unplaced_shapes = []
 
         while self.parts_to_place:

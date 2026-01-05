@@ -3,7 +3,6 @@ import FreeCAD
 import copy
 
 from .algorithms import (
-    genetic_nester,
     minkowski_nester)
 
 class NestingDependencyError(Exception):
@@ -32,7 +31,7 @@ def nest(parts, width, height, rotation_steps=1, algorithm='Grid Fill', simulate
     sheets = []
     unplaced = []
     nester_class = {
-        'Genetic': genetic_nester.GeneticNester,
+
 
         'Minkowski': minkowski_nester.MinkowskiNester,
     }.get(algorithm)
@@ -40,7 +39,7 @@ def nest(parts, width, height, rotation_steps=1, algorithm='Grid Fill', simulate
     if nester_class is None:
         raise NotImplementedError(f"The algorithm '{algorithm}' is not supported.")
 
-    SHAPELY_ALGORITHMS = ['Genetic', 'Minkowski']
+    SHAPELY_ALGORITHMS = ['Minkowski']
     if algorithm in SHAPELY_ALGORITHMS and not SHAPELY_AVAILABLE:
         show_shapely_installation_instructions()
         raise NestingDependencyError("The selected algorithm requires the 'Shapely' library, which is not installed.")

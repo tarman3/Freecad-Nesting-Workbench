@@ -7,11 +7,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from shapely.affinity import translate, rotate, scale
 from shapely.ops import unary_union, triangulate
 from . import minkowski_utils
+import copy
 
 import FreeCAD
 from ....datatypes.shape import Shape
 from ....datatypes.sheet import Sheet
 from .base_nester import BaseNester
+from . import genetic_utils
+from . import minkowski_utils
 from ....datatypes.placed_part import PlacedPart
 import Part
 
@@ -28,9 +31,15 @@ class MinkowskiNester(BaseNester):
         # Default to (0, -1) which corresponds to "Down", matching original behavior (sort of)
         # Original behavior was minimizing Y then X. (0, -1) minimizes Y.
         self.search_direction = kwargs.get("search_direction", (0, -1))
+        
+        # Genetic settings
+        self.population_size = kwargs.get("population_size", 20)
+        self.generations = kwargs.get("generations", 1)
+        self.mutation_rate = 0.1
+        self.elite_size = max(1, int(self.population_size * 0.1))
 
     def nest(self, parts):
-        """Overrides the base nester to add Minkowski-specific cleanup."""
+        """Overrides the base nester to add Minkowski-specific cleanup and optional Genetic Loop."""
         doc = FreeCAD.ActiveDocument
         if doc:
             debug_group = doc.getObject("MinkowskiDebug")
@@ -39,7 +48,111 @@ class MinkowskiNester(BaseNester):
                 doc.removeObject(debug_group.Name)
                 doc.recompute()
         self._debug_group = None # Reset the handle
-        return super().nest(parts)
+        
+        # --- Genetic Optimization Logic ---
+        if self.generations > 1:
+             return self._nest_genetic(parts)
+        else:
+             return super().nest(parts, sort=True)
+
+    def _nest_genetic(self, parts):
+        """Runs the genetic algorithm to find the best part order/rotation."""
+        self.log(f"Starting Genetic Optimization with {self.generations} generations.")
+        
+        population = []
+        for _ in range(self.population_size):
+            population.append(genetic_utils.create_random_chromosome(parts, self.rotation_steps))
+
+        best_solution_overall = None
+
+        for gen in range(self.generations):
+            self.log(f"Generation {gen+1}/{self.generations}...")
+            ranked_population = []
+            
+            # Evaluate fitness
+            for i, chromosome in enumerate(population):
+                fitness = self._calculate_fitness(chromosome)
+                ranked_population.append((fitness, chromosome))
+                # Optional: Log progress within generation
+                # self.log(f"  - Individual {i+1}/{self.population_size}: Fitness {fitness:.2f}")
+
+            ranked_population.sort(key=lambda x: x[0])
+            
+            if best_solution_overall is None or ranked_population[0][0] < best_solution_overall[0]:
+                best_solution_overall = ranked_population[0]
+                self.log(f"  > New Best Fitness: {best_solution_overall[0]:.2f}")
+            
+            # Evolution (skip for last generation)
+            if gen < self.generations - 1:
+                next_population = []
+                # Elitism
+                elites = [sol[1] for sol in ranked_population[:self.elite_size]]
+                next_population.extend(elites)
+                
+                while len(next_population) < self.population_size:
+                    parent1 = genetic_utils.tournament_selection(ranked_population)
+                    parent2 = genetic_utils.tournament_selection(ranked_population)
+                    offspring = genetic_utils.ordered_crossover(parent1, parent2)
+                    genetic_utils.mutate_chromosome(offspring, self.mutation_rate, self.rotation_steps)
+                    next_population.append(offspring)
+                
+                population = next_population
+        
+        # Final pass with best solution
+        self.log("Running final placement for best solution...")
+        # We assume the best chromosome has the optimal order.
+        # We pass sort=False to ensure BaseNester respects this order.
+        return super().nest(best_solution_overall[1], sort=False)
+
+    def _calculate_fitness(self, chromosome):
+        """
+        Calculates fitness for a chromosome using the actual Minkowski placement logic.
+        Lower is better.
+        """
+        # We need a clean run, but we don't want to affect the main object state if possible.
+        # However, super().nest modifies 'sheets' and 'parts_to_place'.
+        # We should probably use a mechanism to query the result without permanent side effects
+        # or just reset afterwards.
+        # Since 'nest' creates new Sheet objects, we are mostly okay.
+        # But 'parts' inside chromosome are modified (moved/rotated).
+        # So we MUST deepcopy the chromosome for evaluation.
+        
+        test_chromosome = [copy.deepcopy(p) for p in chromosome]
+        
+        # Run standard nesting with NO sort
+        sheets, unplaced = super().nest(test_chromosome, sort=False)
+        
+        if not sheets:
+            return float('inf')
+
+        # Fitness Metric:
+        # 1. Minimize sheets used.
+        # 2. Minimize height of last sheet (or width, or area).
+        
+        fitness = len(sheets) * self._bin_width * self._bin_height
+        
+        # Calculate bounding box of last sheet
+        last_sheet = sheets[-1]
+        
+        # Note: If search_direction is horizontal, we should minimize Width.
+        # If search_direction is vertical, minimize Height.
+        # For now, let's just minimize packing efficiency (Bounding Box Area).
+        
+        if last_sheet.parts:
+            # Efficient way to get bounds without shapely union if possible?
+            # Or just iterate parts.
+            min_x = min(p.shape.bounding_box()[0] for p in last_sheet.parts)
+            min_y = min(p.shape.bounding_box()[1] for p in last_sheet.parts)
+            max_x = max(p.shape.bounding_box()[0] + p.shape.bounding_box()[2] for p in last_sheet.parts)
+            max_y = max(p.shape.bounding_box()[1] + p.shape.bounding_box()[3] for p in last_sheet.parts)
+            
+            used_area = (max_x - min_x) * (max_y - min_y)
+            fitness += used_area
+            
+        if unplaced:
+            fitness += len(unplaced) * self._bin_width * self._bin_height * 10
+            
+        return fitness
 
     def _attempt_placement_on_sheet(self, part, sheet):
         """

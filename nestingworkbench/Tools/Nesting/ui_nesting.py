@@ -49,26 +49,7 @@ class NestingPanel(QtGui.QWidget):
         self.rotation_steps_spinbox = QtGui.QSpinBox()
         self.rotation_steps_spinbox.setRange(1, 360) # Minimum 1 rotation step
         self.rotation_steps_spinbox.setValue(1)     # Default to 1 rotation step
-        self.rotation_steps_slider.valueChanged.connect(self.rotation_steps_spinbox.setValue)
         self.rotation_steps_spinbox.valueChanged.connect(self.rotation_steps_slider.setValue)
-
-        self.algorithm_dropdown = QtGui.QComboBox()
-        self.algorithm_dropdown.addItems(["Genetic", "Minkowski"])
-        self.algorithm_dropdown.setCurrentIndex(1)
-
-        # --- Genetic Packer Settings ---
-        self.genetic_settings_group = QtGui.QGroupBox("Genetic Packer Settings")
-        genetic_form_layout = QtGui.QFormLayout()
-        self.genetic_population_size_input = QtGui.QSpinBox()
-        self.genetic_population_size_input.setRange(10, 500)
-        self.genetic_population_size_input.setValue(20)
-        self.genetic_generations_input = QtGui.QSpinBox()
-        self.genetic_generations_input.setRange(1, 1000)
-        self.genetic_generations_input.setValue(50)
-        genetic_form_layout.addRow("Population Size:", self.genetic_population_size_input)
-        genetic_form_layout.addRow("Generations:", self.genetic_generations_input)
-        self.genetic_settings_group.setLayout(genetic_form_layout)
-
 
 
         # --- Minkowski Packer Settings ---
@@ -101,6 +82,22 @@ class NestingPanel(QtGui.QWidget):
 
         minkowski_form_layout.addRow("Packing Direction:", minkowski_dial_layout)
         minkowski_form_layout.addRow(self.minkowski_random_checkbox)
+        
+        # Genetic options for Minkowski
+        self.minkowski_population_size_input = QtGui.QSpinBox()
+        self.minkowski_population_size_input.setRange(5, 500)
+        self.minkowski_population_size_input.setValue(20)
+        
+        self.minkowski_generations_input = QtGui.QSpinBox()
+        self.minkowski_generations_input.setRange(1, 1000)
+        self.minkowski_generations_input.setValue(1) # Default to 1 (No Genetic Loop)
+        self.minkowski_generations_input.setToolTip("Set to 1 for a single pass. Increase to optimize using Genetic Algorithm.")
+
+        minkowski_form_layout.addRow(QtGui.QLabel("")) # Spacer
+        minkowski_form_layout.addRow(QtGui.QLabel("--- Optimization ---"))
+        minkowski_form_layout.addRow("Generations:", self.minkowski_generations_input)
+        minkowski_form_layout.addRow("Population Size:", self.minkowski_population_size_input)
+        
         self.minkowski_settings_group.setLayout(minkowski_form_layout)
 
 
@@ -142,8 +139,8 @@ class NestingPanel(QtGui.QWidget):
         form_layout.addRow("Sheet Height:", self.sheet_height_input)
         form_layout.addRow("Part Spacing:", self.part_spacing_input)
         form_layout.addRow("Boundary Resolution:", self.boundary_resolution_input)
-        form_layout.addRow("Algorithm:", self.algorithm_dropdown)
-        form_layout.addRow(self.genetic_settings_group)
+
+
         form_layout.addRow(self.minkowski_settings_group)
 
         form_layout.addRow("Identifier Font:", font_layout)
@@ -173,8 +170,7 @@ class NestingPanel(QtGui.QWidget):
         self.setLayout(main_layout)
 
         # Connect signals
-        self.algorithm_dropdown.currentIndexChanged.connect(self._on_algorithm_changed)
-        self._on_algorithm_changed(self.algorithm_dropdown.currentIndex()) # Set initial visibility
+
 
         # Link label height input to the add labels checkbox
         self.add_labels_checkbox.stateChanged.connect(self.label_height_input.setEnabled)
@@ -189,11 +185,7 @@ class NestingPanel(QtGui.QWidget):
         self.add_parts_button.clicked.connect(self.add_selected_shapes)
         self.remove_parts_button.clicked.connect(self.remove_selected_shapes)
 
-    def _on_algorithm_changed(self, index):
-        """Shows or hides algorithm-specific settings."""
-        algo_name = self.algorithm_dropdown.itemText(index)
-        self.genetic_settings_group.setVisible(algo_name == "Genetic")
-        self.minkowski_settings_group.setVisible(algo_name == "Minkowski")
+
 
 
     def load_selection(self):

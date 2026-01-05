@@ -124,7 +124,7 @@ class NestingController:
         
         self.ui.status_label.setText("Running nesting algorithm...")
         spacing = self.ui.part_spacing_input.value()
-        algorithm = self.ui.algorithm_dropdown.currentText()
+        algorithm = 'Minkowski'
 
         algo_kwargs = {}
 
@@ -137,11 +137,9 @@ class NestingController:
                 angle_deg = (270 - self.ui.minkowski_direction_dial.value()) % 360
                 angle_rad = math.radians(angle_deg)
                 algo_kwargs['search_direction'] = (math.cos(angle_rad), math.sin(angle_rad))
-
-        if algorithm == 'Genetic':
-            algo_kwargs['population_size'] = self.ui.genetic_population_size_input.value()
-            algo_kwargs['generations'] = self.ui.genetic_generations_input.value()
-            # Could add mutation rate to UI later if needed
+            
+            algo_kwargs['population_size'] = self.ui.minkowski_population_size_input.value()
+            algo_kwargs['generations'] = self.ui.minkowski_generations_input.value()
 
         # --- Prepare UI parameters for controllers ---
         global_rotation_steps = self.ui.rotation_steps_spinbox.value() # This widget is in NestingPanel
