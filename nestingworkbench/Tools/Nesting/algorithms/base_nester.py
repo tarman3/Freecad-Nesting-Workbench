@@ -6,7 +6,7 @@ from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from shapely.geometry import Polygon, Point
-from shapely.ops import unary_union
+
 from shapely.prepared import prep
 from shapely.affinity import rotate, translate
 

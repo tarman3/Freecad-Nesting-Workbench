@@ -2,7 +2,7 @@
 import math
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
-from shapely.geometry import Polygon, MultiPolygon, Point, MultiPoint
+from shapely.geometry import Polygon, Point, MultiPoint
 from shapely.affinity import translate, rotate
 from shapely.ops import unary_union
 from . import minkowski_utils
@@ -31,162 +31,11 @@ class MinkowskiEngine:
              import FreeCAD
              FreeCAD.Console.PrintMessage(f"MINKOWSKI_ENGINE: {message}\n")
 
-    def is_placement_valid_with_holes(self, polygon_to_check, sheet, union_of_other_parts):
-        """
-        Custom validation function for Minkowski that correctly handles holes.
-        """
-        # 1. Check containment within sheet boundaries
-        if not self.bin_polygon.contains(polygon_to_check):
-            return False
 
-        # 2. Check against the pre-calculated union of other parts
-        if not union_of_other_parts:
-            return True # No other parts to collide with
 
-        # --- Advanced Collision Check with Hole Support ---
-        if not polygon_to_check.intersects(union_of_other_parts):
-            return True # No intersection at all, definitely valid.
 
-        # There is an intersection. Check if it's a valid placement inside a hole.
-        intersection_area = polygon_to_check.intersection(union_of_other_parts).area
-        if intersection_area < 1e-9:
-            return True # Negligible intersection is likely just touching, which is allowed.
 
-        # The placement is only valid if the part is entirely contained within one of the holes.
-        if union_of_other_parts.geom_type == 'Polygon':
-            return any(hole.contains(polygon_to_check) for hole in union_of_other_parts.interiors)
-        elif union_of_other_parts.geom_type == 'MultiPolygon':
-            return any(
-                hole.contains(polygon_to_check)
-                for poly in union_of_other_parts.geoms
-                for hole in poly.interiors
-            )
-        return False
 
-    def get_candidate_positions(self, nfps, part_to_place_poly=None):
-        """
-        Generates candidate placement points from the vertices of the No-Fit Polygon.
-        """
-        external_points = []
-        hole_points = []
-
-        # Add the sheet origin as a primary external candidate.
-        if part_to_place_poly:
-            min_x, min_y, max_x, max_y = part_to_place_poly.bounds
-            
-            # 1. Bottom-Left: Part's min_x, min_y at 0,0
-            external_points.append(Point(-min_x, -min_y))
-            
-            w_bin = self.bin_width
-            h_bin = self.bin_height
-            
-            external_points.append(Point(w_bin - max_x, -min_y)) # Bottom-Right
-            external_points.append(Point(-min_x, h_bin - max_y)) # Top-Left
-            external_points.append(Point(w_bin - max_x, h_bin - max_y)) # Top-Right
-
-        for nfp_data in nfps:
-            external_points.extend(nfp_data["exterior_points"])
-            for interior_points in nfp_data["interior_points"]:
-                hole_points.extend(interior_points)
-
-        # Pre-filter candidate points
-        unique_externals = list(MultiPoint(external_points).geoms)
-        valid_external_candidates = []
-        for p in unique_externals:
-            if 0 <= p.x <= self.bin_width and 0 <= p.y <= self.bin_height:
-                valid_external_candidates.append(p)
-
-        unique_holes = list(MultiPoint(hole_points).geoms)
-        valid_hole_candidates = []
-        for p in unique_holes:
-            if 0 <= p.x <= self.bin_width and 0 <= p.y <= self.bin_height:
-                valid_hole_candidates.append(p)
-
-        return valid_hole_candidates, valid_external_candidates
-
-    def generate_nfps(self, part_to_place, placed_parts_grouped, angle):
-        """
-        Generates the No-Fit Polygons for a given part and existing placed parts.
-        Returns a structure optimized for "Reference Frame" checking.
-        """
-        results = []
-        part_to_place_master_label = part_to_place.source_freecad_object.Label
-
-        for (placed_label, placed_angle), parts in placed_parts_grouped.items():
-            
-            # Normalize angles
-            relative_angle = (angle - placed_angle) % 360.0
-            relative_angle = round(relative_angle, 4)
-            
-            cache_key = (
-                placed_label, 
-                part_to_place_master_label, 
-                relative_angle, 
-                part_to_place.spacing,
-                part_to_place.resolution
-            )
-            
-            # 1. Retrieve or Calculate NFP
-            nfp_data = Shape.nfp_cache.get(cache_key)
-            if not nfp_data:
-                first_part = parts[0]
-                nfp_data = self._calculate_and_cache_nfp(
-                    first_part.shape, 
-                    0.0, 
-                    part_to_place, 
-                    relative_angle, 
-                    cache_key
-                )
-            
-            if not nfp_data:
-                continue
-
-            # 2. Prepare Group Data using Vectorized Operations
-            # We rotate the Master NFP *once* for this entire group.
-            master_nfp = nfp_data["polygon"]
-            rotated_master_nfp = rotate(master_nfp, placed_angle, origin=(0, 0))
-            
-            # Extract offsets for all parts in this group
-            # All parts in this group have the same rotation, so we only need their translations.
-            offsets = []
-            for p in parts:
-                c = p.shape.centroid
-                offsets.append((c.x, c.y))
-            
-            # 3. Generate Candidate Points (Absolute Coordinates)
-            # We need to generate absolute candidate points for the solver.
-            # We can do this efficiently by transforming the base points once per group offset.
-            
-            # Rotate points once
-            ext_mp = MultiPoint(nfp_data["exterior_points"])
-            rotated_ext = rotate(ext_mp, placed_angle, origin=(0, 0))
-            
-            int_mps = [rotate(MultiPoint(pts), placed_angle, origin=(0, 0)) for pts in nfp_data["interior_points"]]
-
-            group_exterior_points = []
-            group_interior_points = []
-
-            # Bulk translate for each offset
-            # This is still O(N*Points), but avoids Shapely object creation overhead for every point/polygon
-            # We manually apply offset to coordinates which is faster than affinity.translate on geometry
-            
-            # Extract coords once
-            r_ext_coords = [(p.x, p.y) for p in rotated_ext.geoms]
-            r_int_coords_list = [[(p.x, p.y) for p in imp.geoms] for imp in int_mps]
-
-            for off_x, off_y in offsets:
-                group_exterior_points.extend([Point(x + off_x, y + off_y) for x, y in r_ext_coords])
-                for r_int_coords in r_int_coords_list:
-                     group_interior_points.append([Point(x + off_x, y + off_y) for x, y in r_int_coords])
-
-            results.append({
-                "polygon": rotated_master_nfp, # The NFP geometry rotated but NOT translated (centered at 0,0 relative to placement)
-                "offsets": offsets,            # usage: check contains(pt - offset)
-                "exterior_points": group_exterior_points,
-                "interior_points": group_interior_points,
-            })
-                
-        return results
 
     def get_global_nfp_for(self, part_to_place, angle, sheet):
         """
