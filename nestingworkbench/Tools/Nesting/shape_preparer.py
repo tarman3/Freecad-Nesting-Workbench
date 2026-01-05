@@ -1,5 +1,6 @@
 
 import FreeCAD
+import Part
 import copy
 import Draft
 from .algorithms import shape_processor
@@ -56,7 +57,7 @@ class ShapePreparer:
                 
                 if is_reloading:
                     master_shape_obj, temp_shape_wrapper = self._handle_reloading(
-                        master_obj, label, quantities, temp_shape_wrapper, spacing, boundary_resolution, cache_key
+                        master_obj, label, quantities, temp_shape_wrapper, spacing, boundary_resolution, cache_key, layout_obj
                     )
                 else:
                     master_shape_obj, temp_shape_wrapper = self._handle_new_master(
@@ -107,7 +108,7 @@ class ShapePreparer:
             master_shapes_group.ViewObject.Visibility = False
         return master_shapes_group
 
-    def _handle_reloading(self, master_obj, label, quantities, temp_shape_wrapper, spacing, boundary_resolution, cache_key):
+    def _handle_reloading(self, master_obj, label, quantities, temp_shape_wrapper, spacing, boundary_resolution, cache_key, layout_obj=None):
         master_shape_obj = master_obj
         master_container = master_shape_obj.InList[0]
         
@@ -121,12 +122,70 @@ class ShapePreparer:
         else:
             master_container.addProperty("App::PropertyInteger", "Quantity", "Nest", "Number of instances").Quantity = quantity
 
-        # If not in cache, process now
+        # TRUST MASTER MODE: Use existing geometry if spacing matches
+        cached_spacing = -1
+        if layout_obj and hasattr(layout_obj, "PartSpacing"):
+             # Handle PropertyLength which returns Quantity
+             prop = layout_obj.PartSpacing
+             cached_spacing = prop.Value if hasattr(prop, "Value") else float(prop)
+        
+        if not temp_shape_wrapper and abs(cached_spacing - spacing) < 1e-4 and hasattr(master_shape_obj, "BoundaryObject") and master_shape_obj.BoundaryObject:
+             try:
+                 from shapely.geometry import Polygon
+                 bound_shape = master_shape_obj.BoundaryObject.Shape
+                 
+                 wires = bound_shape.Wires
+                 # Sort by length, assume longest is outer
+                 wires.sort(key=lambda w: w.Length, reverse=True)
+                 
+                 if wires:
+                     # Discretize to recover polygon. Use Deflection to recover vertices efficiently
+                     # Discretize with Deflection returns points primarily at vertices/curve inflection
+                     outer_pts = [(v.x, v.y) for v in wires[0].discretize(Deflection=0.01)]
+                     if outer_pts:
+                         if outer_pts[0] != outer_pts[-1]: outer_pts.append(outer_pts[0])
+                         poly = Polygon(outer_pts)
+                         
+                         holes = []
+                         for w in wires[1:]:
+                             h_pts = [(v.x, v.y) for v in w.discretize(Deflection=0.01)]
+                             if h_pts[0] != h_pts[-1]: h_pts.append(h_pts[0])
+                             if len(h_pts) > 2: holes.append(h_pts)
+                         
+                         final_poly = Polygon(poly.exterior.coords, holes)
+                         
+                         temp_shape_wrapper = Shape(master_shape_obj)
+                         temp_shape_wrapper.polygon = final_poly
+                         temp_shape_wrapper.source_centroid = master_shape_obj.Placement.Base.negative()
+                         
+                         FreeCAD.Console.PrintMessage(f"SHAPE_PROC: Reusing cached geometry for '{label}'\n")
+                         self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
+             except Exception as e:
+                 FreeCAD.Console.PrintWarning(f"Failed to reuse Master Geometry: {e}. Recalculating...\n")
+                 temp_shape_wrapper = None
+
+        # Fallback / Recalc
         if not temp_shape_wrapper:
             temp_shape_wrapper = Shape(master_shape_obj)
             shape_processor.create_single_nesting_part(temp_shape_wrapper, master_shape_obj, spacing, boundary_resolution)
             self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
             
+            # Sync Boundary
+            if temp_shape_wrapper.polygon and hasattr(master_shape_obj, "BoundaryObject") and master_shape_obj.BoundaryObject:
+                 try:
+                     points = list(temp_shape_wrapper.polygon.exterior.coords)
+                     exterior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in points]
+                     wires = []
+                     if len(exterior_verts) > 2: wires.append(Part.makePolygon(exterior_verts))
+                     for interior in temp_shape_wrapper.polygon.interiors:
+                         interior_verts = [FreeCAD.Vector(v[0], v[1], 0) for v in interior.coords]
+                         if len(interior_verts) > 2: wires.append(Part.makePolygon(interior_verts))
+                     
+                     if wires:
+                        master_shape_obj.BoundaryObject.Shape = Part.makeCompound(wires)
+                 except Exception as e:
+                     FreeCAD.Console.PrintWarning(f"Could not update boundary for {label}: {e}\n")
+
         return master_shape_obj, temp_shape_wrapper
 
     def _handle_new_master(self, master_obj, label, quantities, temp_shape_wrapper, spacing, boundary_resolution, cache_key, master_shapes_group, is_reloading):
@@ -212,7 +271,7 @@ class ShapePreparer:
                 shape_instance.spacing = spacing
                 
                 shape_instance.instance_num = i + 1
-                shape_instance.id = f"{shape_instance.source_freecad_object.Label}_{shape_instance.instance_num}"
+                shape_instance.id = f"{lookup_label}_{shape_instance.instance_num}"
                 shape_instance.rotation_steps = part_rotation_steps
 
                 # Create temp copy

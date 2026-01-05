@@ -17,6 +17,7 @@ class NestingPanel(QtGui.QWidget):
     """
     def __init__(self, parent=None):
         super(NestingPanel, self).__init__(parent)
+        FreeCAD.Console.PrintMessage("NestingPanel initialized.\n")
         self.setWindowTitle("Nesting Tool")
         self.selected_shapes_to_process = []
         self.hidden_originals = []
@@ -25,6 +26,24 @@ class NestingPanel(QtGui.QWidget):
         self.initUI()
         self.load_selection()
         self.set_default_font()
+    
+    def accept(self):
+        """Called when the user clicks Standard Button OK / Apply."""
+        if hasattr(self, 'controller'):
+            self.controller.finalize_job()
+        return True
+
+    def reject(self):
+        """Called when the user clicks Standard Button Cancel / Close."""
+        if hasattr(self, 'controller'):
+            self.controller.cancel_job()
+            
+        # Also ensure visibility is restored if controller didn't fully run
+        for obj in self.hidden_originals:
+             if hasattr(obj, "ViewObject"):
+                 obj.ViewObject.Visibility = True
+                 
+        return True
 
     def initUI(self):
         main_layout = QtGui.QVBoxLayout()
@@ -196,10 +215,12 @@ class NestingPanel(QtGui.QWidget):
 
 
     def load_selection(self):
+        FreeCAD.Console.PrintMessage("Loading selection into Nesting Panel...\n")
         selection = FreeCADGui.Selection.getSelection()
         self.shape_table.setRowCount(0)
 
         if not selection:
+            FreeCAD.Console.PrintMessage("  -> No selection found.\n")
             self.status_label.setText("Warning: No shapes selected.")
             self.nest_button.setEnabled(False)
             return
@@ -207,8 +228,10 @@ class NestingPanel(QtGui.QWidget):
         # Check if a layout group is selected
         first_selected = selection[0]
         if first_selected.isDerivedFrom("App::DocumentObjectGroup") and first_selected.Label.startswith("Layout_"):
+            FreeCAD.Console.PrintMessage(f"  -> Detected layout selection: {first_selected.Label}\n")
             self.load_layout(first_selected)
         else:
+            FreeCAD.Console.PrintMessage(f"  -> Detected {len(selection)} shapes.\n")
             self.load_shapes(selection)
 
     def load_layout(self, layout_group):
@@ -237,6 +260,9 @@ class NestingPanel(QtGui.QWidget):
             # as that is what the processing logic expects.
             shapes_to_load = []
             quantities = {}
+            rotation_overrides = {}
+            rotation_steps_map = {}
+            
             for master_container in master_shapes_group.Group:
                 if master_container.isDerivedFrom("App::Part") and master_container.Label.startswith("master_"):
                     # The object to load is the 'master_shape_...' object inside the 'master_...' container.
@@ -244,17 +270,29 @@ class NestingPanel(QtGui.QWidget):
                     if shape_obj and hasattr(shape_obj, "Proxy"):
                         shapes_to_load.append(shape_obj)
                         
-                        # Try to recover quantity from property on container, defaulting to 1
-                        if hasattr(master_container, "Quantity"):
-                             quantities[shape_obj.Label] = master_container.Quantity
-                        else:
-                             quantities[shape_obj.Label] = 1 # Default fallback
+                        # Recover properties from container
+                        quantities[shape_obj.Label] = getattr(master_container, "Quantity", 1)
+                        
+                        if hasattr(master_container, "PartRotationOverride"):
+                            rotation_overrides[shape_obj.Label] = master_container.PartRotationOverride
+                        if hasattr(master_container, "PartRotationSteps"):
+                            rotation_steps_map[shape_obj.Label] = master_container.PartRotationSteps
             
-            self.load_shapes(shapes_to_load, is_reloading_layout=True, initial_quantities=quantities)
+            self.load_shapes(
+                shapes_to_load, 
+                is_reloading_layout=True, 
+                initial_quantities=quantities,
+                initial_overrides=rotation_overrides,
+                initial_rotation_steps=rotation_steps_map
+            )
+            
+            # Load Global Rotation Steps if present
+            if hasattr(layout_group, "GlobalRotationSteps"):
+                self.rotation_steps_spinbox.setValue(layout_group.GlobalRotationSteps)
         else:
             self.status_label.setText("Warning: Could not find 'MasterShapes' group in the selected layout.")
 
-    def load_shapes(self, selection, is_reloading_layout=False, initial_quantities=None):
+    def load_shapes(self, selection, is_reloading_layout=False, initial_quantities=None, initial_overrides=None, initial_rotation_steps=None):
         """Loads a selection of shapes into the UI."""
         self.nest_button.setEnabled(True)
         self.selected_shapes_to_process = list(dict.fromkeys(selection)) # Keep unique, preserve order
@@ -269,15 +307,19 @@ class NestingPanel(QtGui.QWidget):
             if display_label.startswith("master_shape_"):
                 display_label = display_label.replace("master_shape_", "")
             
-            # label_item = QtGui.QTableWidgetItem(display_label)
-            # label_item.setFlags(label_item.flags() & ~QtCore.Qt.ItemIsEditable)
-            
             qty = 1
             if initial_quantities and obj.Label in initial_quantities:
                 qty = initial_quantities[obj.Label]
                 
-            self._add_part_row(i, display_label, quantity=qty)
+            steps = 4
+            override = False
+            if initial_rotation_steps and obj.Label in initial_rotation_steps:
+                steps = initial_rotation_steps[obj.Label]
+            if initial_overrides and obj.Label in initial_overrides:
+                override = initial_overrides[obj.Label]
 
+            self._add_part_row(i, display_label, quantity=qty, rotation_steps=steps, override_rotation=override)
+        
         self.shape_table.resizeColumnsToContents()
         self.status_label.setText(f"{len(selection)} unique object(s) selected. Specify quantities and nest.")
 
@@ -302,7 +344,7 @@ class NestingPanel(QtGui.QWidget):
         self.shape_table.resizeColumnsToContents()
         self.status_label.setText(f"Added {added_count} new shape(s).")
 
-    def _add_part_row(self, row_index, label, quantity=1):
+    def _add_part_row(self, row_index, label, quantity=1, rotation_steps=4, override_rotation=False):
         """Helper function to create and populate a single row in the parts table."""
         label_item = QtGui.QTableWidgetItem(label)
         label_item.setFlags(label_item.flags() & ~QtCore.Qt.ItemIsEditable)
@@ -318,11 +360,11 @@ class NestingPanel(QtGui.QWidget):
         
         rotation_slider = QtGui.QSlider(QtCore.Qt.Horizontal)
         rotation_slider.setRange(0, 360) # Allow 0 for no rotation
-        rotation_slider.setValue(4)
+        rotation_slider.setValue(rotation_steps)
         
         rotation_spinbox = QtGui.QSpinBox()
         rotation_spinbox.setRange(0, 360) # Allow 0 for no rotation
-        rotation_spinbox.setValue(4)
+        rotation_spinbox.setValue(rotation_steps)
         rotation_spinbox.setToolTip("Override global rotation steps for this part. 0 or 1 means no rotation.")
 
         rotation_slider.valueChanged.connect(rotation_spinbox.setValue)
@@ -332,9 +374,9 @@ class NestingPanel(QtGui.QWidget):
         rotation_layout.addWidget(rotation_spinbox)
 
         override_checkbox = QtGui.QCheckBox()
-        override_checkbox.setChecked(False)
+        override_checkbox.setChecked(override_rotation)
         override_checkbox.stateChanged.connect(rotation_widget.setEnabled)
-        rotation_widget.setEnabled(False) # Disabled by default
+        rotation_widget.setEnabled(override_rotation) # Disabled by default unless overridden
 
         self.shape_table.setItem(row_index, 0, label_item)
         self.shape_table.setCellWidget(row_index, 1, quantity_spinbox)

@@ -19,11 +19,15 @@ class NestingTaskPanel:
     
     def accept(self):
         """Called by FreeCAD when the dialog's 'OK' button is clicked."""
+        if hasattr(self.form, "accept"):
+            self.form.accept()
         self.cleanup()
         return True
 
     def reject(self):
         """Called by FreeCAD when the dialog is closed or 'Cancel' is clicked."""
+        if hasattr(self.form, "reject"):
+            self.form.reject()
         self.cleanup()
         return True
 

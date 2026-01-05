@@ -46,11 +46,20 @@ def get_2d_profile_from_obj(obj):
             raise ValueError(f"Sketch '{obj.Label}' contains no wires to form a face.")
 
     # Case 3: Generic shapes (like imported SVGs or other Part features)
-    # If it already has a planar face, use the first one found.
+    # Case 3: Generic shapes (like imported SVGs or other Part features)
+    # If it already has a planar face, prefer one parallel to the XY plane.
     if shape.Faces:
+        # First pass: Look for XY aligned faces
         for face in shape.Faces:
             if face.Surface.isPlanar():
-                return face # Return the first valid planar face
+                normal = face.normalAt(0,0)
+                if abs(normal.z) > 0.9: # Roughly parallel to Z axis
+                    return face 
+                    
+        # Second pass: Return first valid planar face found
+        for face in shape.Faces:
+            if face.Surface.isPlanar():
+                return face
 
     # If it has no faces but has wires (common for imported SVGs), try to build a face.
     if shape.Wires:

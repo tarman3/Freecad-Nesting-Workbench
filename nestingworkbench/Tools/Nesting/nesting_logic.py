@@ -2,7 +2,7 @@ from PySide import QtGui
 import FreeCAD
 import copy
 
-from .algorithms import base_nester
+from .algorithms import nesting_strategy
 
 class NestingDependencyError(Exception):
     """Custom exception for missing optional dependencies like Shapely."""
@@ -37,7 +37,7 @@ def nest(parts, width, height, rotation_steps=1, simulate=False, **kwargs):
 
     # The controller now passes a fresh list of all parts to be nested.
     # The nester algorithms are responsible for the full multi-sheet nesting run.
-    nester = base_nester.Nester(width, height, rotation_steps, **kwargs)
+    nester = nesting_strategy.Nester(width, height, rotation_steps, **kwargs)
 
     # If simulation is enabled, pass a callback that can draw the sheet state.
     if simulate:
