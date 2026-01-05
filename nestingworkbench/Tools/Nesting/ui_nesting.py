@@ -230,17 +230,25 @@ class NestingPanel(QtGui.QWidget):
             # We need to find the actual ShapeObject inside each 'master_' container,
             # as that is what the processing logic expects.
             shapes_to_load = []
+            quantities = {}
             for master_container in master_shapes_group.Group:
                 if master_container.isDerivedFrom("App::Part") and master_container.Label.startswith("master_"):
                     # The object to load is the 'master_shape_...' object inside the 'master_...' container.
                     shape_obj = next((child for child in master_container.Group if child.Label.startswith("master_shape_")), None)
                     if shape_obj and hasattr(shape_obj, "Proxy"):
                         shapes_to_load.append(shape_obj)
-            self.load_shapes(shapes_to_load, is_reloading_layout=True)
+                        
+                        # Try to recover quantity from property on container, defaulting to 1
+                        if hasattr(master_container, "Quantity"):
+                             quantities[shape_obj.Label] = master_container.Quantity
+                        else:
+                             quantities[shape_obj.Label] = 1 # Default fallback
+            
+            self.load_shapes(shapes_to_load, is_reloading_layout=True, initial_quantities=quantities)
         else:
             self.status_label.setText("Warning: Could not find 'MasterShapes' group in the selected layout.")
 
-    def load_shapes(self, selection, is_reloading_layout=False):
+    def load_shapes(self, selection, is_reloading_layout=False, initial_quantities=None):
         """Loads a selection of shapes into the UI."""
         self.nest_button.setEnabled(True)
         self.selected_shapes_to_process = list(dict.fromkeys(selection)) # Keep unique, preserve order
@@ -250,10 +258,19 @@ class NestingPanel(QtGui.QWidget):
         
         self.shape_table.setRowCount(len(self.selected_shapes_to_process))
         for i, obj in enumerate(self.selected_shapes_to_process):
-            label_item = QtGui.QTableWidgetItem(obj.Label)
-            label_item.setFlags(label_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            # Clean up label if it's a master shape
+            display_label = obj.Label
+            if display_label.startswith("master_shape_"):
+                display_label = display_label.replace("master_shape_", "")
             
-            self._add_part_row(i, obj.Label)
+            # label_item = QtGui.QTableWidgetItem(display_label)
+            # label_item.setFlags(label_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            
+            qty = 1
+            if initial_quantities and obj.Label in initial_quantities:
+                qty = initial_quantities[obj.Label]
+                
+            self._add_part_row(i, display_label, quantity=qty)
 
         self.shape_table.resizeColumnsToContents()
         self.status_label.setText(f"{len(selection)} unique object(s) selected. Specify quantities and nest.")
@@ -279,14 +296,14 @@ class NestingPanel(QtGui.QWidget):
         self.shape_table.resizeColumnsToContents()
         self.status_label.setText(f"Added {added_count} new shape(s).")
 
-    def _add_part_row(self, row_index, label):
+    def _add_part_row(self, row_index, label, quantity=1):
         """Helper function to create and populate a single row in the parts table."""
         label_item = QtGui.QTableWidgetItem(label)
         label_item.setFlags(label_item.flags() & ~QtCore.Qt.ItemIsEditable)
 
         quantity_spinbox = QtGui.QSpinBox()
         quantity_spinbox.setRange(1, 500)
-        quantity_spinbox.setValue(1)
+        quantity_spinbox.setValue(quantity)
 
         # --- Rotation Override Widget ---
         rotation_widget = QtGui.QWidget()

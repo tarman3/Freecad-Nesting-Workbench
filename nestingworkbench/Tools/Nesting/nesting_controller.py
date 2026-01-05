@@ -356,6 +356,18 @@ class NestingController:
                     # We are reloading. The master_obj is the ShapeObject. Its container is the master_container.
                     master_shape_obj = master_obj
                     master_container = master_shape_obj.InList[0]
+                    
+                    # Update quantity on existing container
+                    quantity, _ = quantities.get(label.replace("master_shape_", ""), (1, 1)) # Label in quantities dict doesn't have prefix here? 
+                    # Actually quantities dict relies on shape table labels. 
+                    # When reloading, shape_table has cleaned labels ("Box" not "master_shape_Box").
+                    # master_obj.Label is "master_shape_Box".
+                    
+                    if hasattr(master_container, "Quantity"):
+                        master_container.Quantity = quantity
+                    else:
+                        master_container.addProperty("App::PropertyInteger", "Quantity", "Nest", "Number of instances").Quantity = quantity
+
                     # We still need a temp wrapper for sorting and placement logic.
                     temp_shape_wrapper = Shape(master_shape_obj)
                     shape_processor.create_single_nesting_part(temp_shape_wrapper, master_shape_obj, spacing, boundary_resolution)
@@ -365,6 +377,11 @@ class NestingController:
                     shape_processor.create_single_nesting_part(temp_shape_wrapper, master_obj, spacing, boundary_resolution)
 
                     master_container = self.doc.addObject("App::Part", f"master_{label}")
+                    
+                    # Store quantity on the container for later retrieval
+                    quantity, _ = quantities.get(label, (1, 1))
+                    master_container.addProperty("App::PropertyInteger", "Quantity", "Nest", "Number of instances").Quantity = quantity
+
                     # Hide the master container immediately upon creation.
                     if hasattr(master_container, "ViewObject"):
                         master_container.ViewObject.Visibility = False
