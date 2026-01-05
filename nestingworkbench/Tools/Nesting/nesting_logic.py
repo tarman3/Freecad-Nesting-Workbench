@@ -4,7 +4,6 @@ import copy
 
 from .algorithms import (
     genetic_nester,
-    gravity_nester,
     minkowski_nester)
 
 class NestingDependencyError(Exception):
@@ -34,14 +33,14 @@ def nest(parts, width, height, rotation_steps=1, algorithm='Grid Fill', simulate
     unplaced = []
     nester_class = {
         'Genetic': genetic_nester.GeneticNester,
-        'Gravity': gravity_nester.GravityNester,
+
         'Minkowski': minkowski_nester.MinkowskiNester,
     }.get(algorithm)
 
     if nester_class is None:
         raise NotImplementedError(f"The algorithm '{algorithm}' is not supported.")
 
-    SHAPELY_ALGORITHMS = ['Genetic', 'Gravity', 'Minkowski']
+    SHAPELY_ALGORITHMS = ['Genetic', 'Minkowski']
     if algorithm in SHAPELY_ALGORITHMS and not SHAPELY_AVAILABLE:
         show_shapely_installation_instructions()
         raise NestingDependencyError("The selected algorithm requires the 'Shapely' library, which is not installed.")

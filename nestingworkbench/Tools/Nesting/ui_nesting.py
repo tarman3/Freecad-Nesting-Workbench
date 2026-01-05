@@ -53,8 +53,8 @@ class NestingPanel(QtGui.QWidget):
         self.rotation_steps_spinbox.valueChanged.connect(self.rotation_steps_slider.setValue)
 
         self.algorithm_dropdown = QtGui.QComboBox()
-        self.algorithm_dropdown.addItems(["Gravity", "Genetic", "Minkowski"])
-        self.algorithm_dropdown.setCurrentIndex(2)
+        self.algorithm_dropdown.addItems(["Genetic", "Minkowski"])
+        self.algorithm_dropdown.setCurrentIndex(1)
 
         # --- Genetic Packer Settings ---
         self.genetic_settings_group = QtGui.QGroupBox("Genetic Packer Settings")
@@ -104,50 +104,7 @@ class NestingPanel(QtGui.QWidget):
         self.minkowski_settings_group.setLayout(minkowski_form_layout)
 
 
-        # --- Gravity Packer Settings ---
-        self.gravity_settings_group = QtGui.QGroupBox("Gravity Nester Settings")
-        gravity_form_layout = QtGui.QFormLayout()
 
-        # Direction Dial
-        self.gravity_direction_dial = QtGui.QDial()
-        self.gravity_direction_dial.setRange(0, 359)
-        self.gravity_direction_dial.setValue(0) # Default to Down
-        self.gravity_direction_dial.setWrapping(True)
-        self.gravity_direction_dial.setNotchesVisible(True)
-        self.gravity_direction_label = QtGui.QLabel("Down")
-        self.gravity_direction_label.setAlignment(QtCore.Qt.AlignCenter)
-        
-        def update_dial_label(value):
-            direction_map = {0: "Down", 90: "Left", 180: "Up", 270: "Right"}
-            direction_text = direction_map.get(value, "")
-            self.gravity_direction_label.setText(direction_text if direction_text else f"{value}°")
-        self.gravity_direction_dial.valueChanged.connect(update_dial_label)
-
-        dial_layout = QtGui.QVBoxLayout()
-        dial_layout.addWidget(self.gravity_direction_dial)
-        dial_layout.addWidget(self.gravity_direction_label)
-
-        # Random Direction Checkbox
-        self.gravity_random_checkbox = QtGui.QCheckBox("Use Random Direction")
-        self.gravity_random_checkbox.stateChanged.connect(lambda state: self.gravity_direction_dial.setDisabled(state))
-
-        self.gravity_step_size_input = QtGui.QDoubleSpinBox(); self.gravity_step_size_input.setRange(0.1, 100); self.gravity_step_size_input.setValue(5.0)
-        self.gravity_max_spawn_input = QtGui.QSpinBox(); self.gravity_max_spawn_input.setRange(1, 1000); self.gravity_max_spawn_input.setValue(100)
-        self.gravity_anneal_steps_input = QtGui.QSpinBox(); self.gravity_anneal_steps_input.setRange(0, 1000); self.gravity_anneal_steps_input.setValue(25)
-        self.anneal_rotate_checkbox = QtGui.QCheckBox("Anneal Rotation"); self.anneal_rotate_checkbox.setChecked(True)
-        self.anneal_translate_checkbox = QtGui.QCheckBox("Anneal Position"); self.anneal_translate_checkbox.setChecked(True)
-        self.anneal_random_shake_checkbox = QtGui.QCheckBox("Random Anneal Direction"); self.anneal_random_shake_checkbox.setChecked(False)
-        self.gravity_max_nesting_steps_input = QtGui.QSpinBox(); self.gravity_max_nesting_steps_input.setRange(1, 5000); self.gravity_max_nesting_steps_input.setValue(500)
-        gravity_form_layout.addRow("Gravity Direction:", dial_layout)
-        gravity_form_layout.addRow(self.gravity_random_checkbox)
-        gravity_form_layout.addRow("Step Size:", self.gravity_step_size_input)
-        gravity_form_layout.addRow("Max Spawn Tries:", self.gravity_max_spawn_input)
-        gravity_form_layout.addRow("Anneal Steps on Collide:", self.gravity_anneal_steps_input)
-        gravity_form_layout.addRow("Max Nesting Steps:", self.gravity_max_nesting_steps_input)
-        gravity_form_layout.addRow(self.anneal_rotate_checkbox)
-        gravity_form_layout.addRow(self.anneal_translate_checkbox)
-        gravity_form_layout.addRow(self.anneal_random_shake_checkbox)
-        self.gravity_settings_group.setLayout(gravity_form_layout)
 
 
         self.show_bounds_checkbox = QtGui.QCheckBox("Show Bounds"); self.show_bounds_checkbox.setChecked(False)
@@ -188,7 +145,7 @@ class NestingPanel(QtGui.QWidget):
         form_layout.addRow("Algorithm:", self.algorithm_dropdown)
         form_layout.addRow(self.genetic_settings_group)
         form_layout.addRow(self.minkowski_settings_group)
-        form_layout.addRow(self.gravity_settings_group)
+
         form_layout.addRow("Identifier Font:", font_layout)
         form_layout.addRow(label_options_layout)
         
@@ -237,7 +194,7 @@ class NestingPanel(QtGui.QWidget):
         algo_name = self.algorithm_dropdown.itemText(index)
         self.genetic_settings_group.setVisible(algo_name == "Genetic")
         self.minkowski_settings_group.setVisible(algo_name == "Minkowski")
-        self.gravity_settings_group.setVisible(algo_name == "Gravity")
+
 
     def load_selection(self):
         selection = FreeCADGui.Selection.getSelection()

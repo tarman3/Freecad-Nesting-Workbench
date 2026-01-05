@@ -127,25 +127,7 @@ class NestingController:
         algorithm = self.ui.algorithm_dropdown.currentText()
 
         algo_kwargs = {}
-        if algorithm == 'Gravity':
-            if self.ui.gravity_random_checkbox.isChecked():
-                # Let the packer handle generating a random vector
-                algo_kwargs['gravity_direction'] = None 
-            else:
-                # Convert dial angle to a direction vector
-                # User wants 0=Down, 90=Right, 180=Up, 270=Left.
-                # We use (270 - angle) to map the dial value to the standard math unit circle.
-                angle_deg = (270 - self.ui.gravity_direction_dial.value()) % 360
-                angle_rad = math.radians(angle_deg)
-                algo_kwargs['gravity_direction'] = (math.cos(angle_rad), math.sin(angle_rad))
 
-            algo_kwargs['step_size'] = self.ui.gravity_step_size_input.value() # Maps to BaseNester's step_size
-            algo_kwargs['anneal_rotate_enabled'] = self.ui.anneal_rotate_checkbox.isChecked() # This widget is in NestingPanel
-            algo_kwargs['anneal_translate_enabled'] = self.ui.anneal_translate_checkbox.isChecked() # This widget is in NestingPanel
-            algo_kwargs['anneal_random_shake_direction'] = self.ui.anneal_random_shake_checkbox.isChecked() # This widget is in NestingPanel
-            algo_kwargs['max_spawn_count'] = self.ui.gravity_max_spawn_input.value()
-            algo_kwargs['anneal_steps'] = self.ui.gravity_anneal_steps_input.value() # This widget is in NestingPanel
-            algo_kwargs['max_nesting_steps'] = self.ui.gravity_max_nesting_steps_input.value() # This widget is in NestingPanel
 
         if algorithm == 'Minkowski':
             if self.ui.minkowski_random_checkbox.isChecked():
