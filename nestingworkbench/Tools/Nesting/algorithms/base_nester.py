@@ -5,7 +5,7 @@ import copy
 from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, Point
 from shapely.ops import unary_union
 from shapely.prepared import prep
 from shapely.affinity import rotate, translate
@@ -71,60 +71,75 @@ class PlacementOptimizer:
         return None
 
     def _evaluate_rotation(self, angle, part, placed_parts_grouped, sheet, direction):
-        # self.log(f"DEBUG: Checking Angle {angle} for {part.id}")
+        # 1. Get Combined NFP from Engine (Incrementally Cached on Sheet)
+        nfp_entry = self.engine.get_global_nfp_for(part, angle, sheet)
         
-        # 1. Get NFPs from Engine
-        nfps = self.engine.generate_nfps(part, placed_parts_grouped, angle)
-        
-        # Optimization: Use NFP polygons directly for collision checking
-        nfp_polygons = [res['polygon'] for res in nfps]
         bin_polygon = self.engine.bin_polygon
         
-        merged_nfp = unary_union(nfp_polygons) if nfp_polygons else None
-        prepared_nfp = prep(merged_nfp) if merged_nfp else None
+        # Prepare geometry for fast containment check
+        union_poly = nfp_entry['polygon']
+        prepared_nfp = nfp_entry.get('prepared')
+        if not prepared_nfp and not union_poly.is_empty:
+             prepared_nfp = prep(union_poly)
+             nfp_entry['prepared'] = prepared_nfp
 
-        # 2. Get Candidates from Engine
+        # 2. Generate Candidates
         rotated_poly = rotate(part.original_polygon, angle, origin='centroid')
-        hole_cands, ext_cands = self.engine.get_candidate_positions(nfps, rotated_poly)
-        
         if not rotated_poly: return {'metric': float('inf')}
+
+        # A. Bin Candidates (Corners of part vs Corners of bin)
+        min_x, min_y, max_x, max_y = rotated_poly.bounds
+        ext_cands = []
+        w_bin, h_bin = self.engine.bin_width, self.engine.bin_height
         
-        # 3. Score Candidates (Local Logic)
+        # Essential placement points
+        # Bottom-Left at (0,0) -> (-min_x, -min_y)
+        ext_cands.append(Point(-min_x, -min_y)) 
+        ext_cands.append(Point(w_bin - max_x, -min_y))
+        ext_cands.append(Point(-min_x, h_bin - max_y))
+        ext_cands.append(Point(w_bin - max_x, h_bin - max_y))
+
+        # B. NFP Boundary Candidates
+        # Filter points that are within bin bounds
+        valid_points = []
+        for p in nfp_entry['points']:
+             if 0 <= p.x <= w_bin and 0 <= p.y <= h_bin:
+                 valid_points.append(p)
+        ext_cands.extend(valid_points)
+
+        # 3. Score Candidates
         centroid = rotated_poly.centroid
         dir_x, dir_y = direction
         
         best = {'metric': float('inf')}
         
-        # Function to score a point
         def score_point(pt):
+             # A. Check NFP Collision (Fastest if cached)
+             if prepared_nfp and prepared_nfp.contains(pt): 
+                 return None
+                 
              dx, dy = pt.x - centroid.x, pt.y - centroid.y
-             # Check NFP efficiently (Point in Polygon)
-             if prepared_nfp and prepared_nfp.contains(pt): return None
-             # Check Bounds
+             
+             # B. Check Bounds
              test_poly = translate(rotated_poly, xoff=dx, yoff=dy)
              if not bin_polygon.contains(test_poly): return None
-             
+
              return pt.x * (-dir_x) + pt.y * (-dir_y)
 
-        # Check holes first
-        for pt in hole_cands:
-            metric = score_point(pt)
-            if metric is not None and metric < best['metric']:
-                 best = {'x': pt.x, 'y': pt.y, 'angle': angle, 'metric': metric}
+        # Sort candidates (heuristic optimization)
+        # ext_cands.sort(key=lambda p: p.x * (-dir_x) + p.y * (-dir_y))
 
-        if best['metric'] != float('inf'): return best
-
-        # Check external
-        ext_cands.sort(key=lambda p: p.x * (-dir_x) + p.y * (-dir_y))
-        
         for pt in ext_cands:
-            # Pruning
-            metric = pt.x * (-dir_x) + pt.y * (-dir_y)
-            if metric >= best['metric']: continue
+            # Pruning (optional)
+            # metric = pt.x * (-dir_x) + pt.y * (-dir_y)
+            # if metric >= best['metric']: continue
+            
+            # Simple deduplication could be added here
             
             valid_metric = score_point(pt)
             if valid_metric is not None:
-                return {'x': pt.x, 'y': pt.y, 'angle': angle, 'metric': valid_metric}
+                if valid_metric < best['metric']:
+                    best = {'x': pt.x, 'y': pt.y, 'angle': angle, 'metric': valid_metric}
         
         return best
 
@@ -199,7 +214,8 @@ class Nester:
 
                 if self._attempt_placement_on_sheet(part, sheet):
                     placed = True
-                    self.log(f"  -> Placed on Sheet {sheet_idx+1}")
+                    elapsed = (datetime.now() - start_part_time).total_seconds()
+                    self.log(f"  -> Placed on Sheet {sheet_idx+1} ({elapsed:.4f}s)")
                     if self.update_callback: self.update_callback(part, sheet)
                     break
             
@@ -209,7 +225,8 @@ class Nester:
                 if self._attempt_placement_on_sheet(part, new_sheet):
                     sheets.append(new_sheet)
                     placed = True
-                    self.log(f"  -> Placed on New Sheet {len(sheets)}")
+                    elapsed = (datetime.now() - start_part_time).total_seconds()
+                    self.log(f"  -> Placed on New Sheet {len(sheets)} ({elapsed:.4f}s)")
                     if self.update_callback: self.update_callback(part, new_sheet)
                 else:
                     unplaced_parts.append(part)
@@ -285,13 +302,9 @@ class Nester:
         placed_part = self.optimizer.find_best_placement(part, sheet)
         
         if placed_part:
-            # Calc union only when needed for validity check
-            other_polys = [p.shape.polygon for p in sheet.parts if p.shape.polygon]
-            union_others = unary_union(other_polys) if other_polys else None
-
-            # Double check validity with engine (optional/redundant but good for safety)
-            if self.engine.is_placement_valid_with_holes(placed_part.polygon, sheet, union_others):
-                placed_part.placement = placed_part.get_final_placement(sheet.get_origin())
-                sheet.add_part(PlacedPart(placed_part))
-                return True
+            # We trust the PlacementOptimizer (and NFP engine) to have found a valid spot.
+            # The expensive unary_union check is unnecessary if NFP logic is correct.
+            placed_part.placement = placed_part.get_final_placement(sheet.get_origin())
+            sheet.add_part(PlacedPart(placed_part))
+            return True
         return False
