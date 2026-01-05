@@ -2,8 +2,7 @@ from PySide import QtGui
 import FreeCAD
 import copy
 
-from .algorithms import (
-    minkowski_nester)
+from .algorithms import base_nester
 
 class NestingDependencyError(Exception):
     """Custom exception for missing optional dependencies like Shapely."""
@@ -17,7 +16,7 @@ except ImportError:
     SHAPELY_AVAILABLE = False
 
 # --- Public Function ---
-def nest(parts, width, height, rotation_steps=1, algorithm='Grid Fill', simulate=False, **kwargs):
+def nest(parts, width, height, rotation_steps=1, simulate=False, **kwargs):
     """Convenience function to run the nesting algorithm."""
     # If simulation is enabled, the nester needs the original list of parts
     # that are linked to the visible FreeCAD objects (fc_object).
@@ -30,23 +29,15 @@ def nest(parts, width, height, rotation_steps=1, algorithm='Grid Fill', simulate
     steps = 0
     sheets = []
     unplaced = []
-    nester_class = {
 
 
-        'Minkowski': minkowski_nester.MinkowskiNester,
-    }.get(algorithm)
-
-    if nester_class is None:
-        raise NotImplementedError(f"The algorithm '{algorithm}' is not supported.")
-
-    SHAPELY_ALGORITHMS = ['Minkowski']
-    if algorithm in SHAPELY_ALGORITHMS and not SHAPELY_AVAILABLE:
+    if not SHAPELY_AVAILABLE:
         show_shapely_installation_instructions()
         raise NestingDependencyError("The selected algorithm requires the 'Shapely' library, which is not installed.")
 
     # The controller now passes a fresh list of all parts to be nested.
     # The nester algorithms are responsible for the full multi-sheet nesting run.
-    nester = nester_class(width, height, rotation_steps, **kwargs)
+    nester = base_nester.Nester(width, height, rotation_steps, **kwargs)
 
     # If simulation is enabled, pass a callback that can draw the sheet state.
     if simulate:

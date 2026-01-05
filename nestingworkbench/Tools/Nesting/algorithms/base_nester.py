@@ -1,281 +1,251 @@
+
 import math
-import copy
 import random
+import copy
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from shapely.geometry import Polygon
+from shapely.ops import unary_union
+from shapely.affinity import rotate, translate
+
 import FreeCAD
 from ....datatypes.sheet import Sheet
 from ....datatypes.placed_part import PlacedPart
+from . import genetic_utils
+from .minkowski_engine import MinkowskiEngine
 
-# --- Base Packer Class ---
-class BaseNester(object):
-    """Base class for nesting algorithms. Relies on the shapely library."""
+class Nester:
+    """
+    The main nesting algorithm class. 
+    It orchestrates the nesting process, managing sheets, parts, and the optimization loop.
+    It delegates geometric calculations to the MinkowskiEngine.
+    """
     def __init__(self, width, height, rotation_steps=1, **kwargs):
-        self._bin_width = width
-        self._bin_height = height
-        self.rotation_steps = rotation_steps if rotation_steps > 0 else 1
+        self.bin_width = width
+        self.bin_height = height
+        self.rotation_steps = max(1, rotation_steps)
         self.spacing = kwargs.get("spacing", 0)
-        self.max_spawn_count = kwargs.get("max_spawn_count", 100)
-        self.anneal_steps = kwargs.get("anneal_steps", 100)
-        self.step_size = kwargs.get("step_size", 5.0)
-        self.anneal_rotate_enabled = kwargs.get("anneal_rotate_enabled", True)
-        self.anneal_translate_enabled = kwargs.get("anneal_translate_enabled", True)
-        self.anneal_random_shake_direction = kwargs.get("anneal_random_shake_direction", False)
-        self.update_callback = kwargs.get("update_callback", None)
+        self.search_direction = kwargs.get("search_direction", (0, -1)) # Default Down
+        
+        # Optimization settings
+        self.population_size = kwargs.get("population_size", 20)
+        self.generations = kwargs.get("generations", 1)
+        self.mutation_rate = 0.1
+        self.elite_size = max(1, int(self.population_size * 0.1))
+        
+        self.log_callback = kwargs.get("log_callback")
+        
+        # Initialize the Geometry Engine
+        # We pass step_size if it was used, but simpler to rely on defaults or kwargs
+        # The UI passed 'boundary_resolution' which might be related, but let's stick to defaults 
+        # or what was passed. BaseNester had 'step_size' default 5.0. 
+        step_size = kwargs.get("step_size", 5.0) 
+        self.engine = MinkowskiEngine(width, height, step_size, log_callback=self.log_callback)
 
-        self.parts_to_place = [] # This list will hold Shape objects
+        self.parts_to_place = []
         self.sheets = []
-        
-        self._bin_polygon = Polygon([(0, 0), (width, 0), (width, height), (0, height)])
 
-    def _attempt_placement_on_sheet(self, part, sheet):
-        """
-        Attempts to place a part on a sheet, and if successful, finalizes
-        its placement and adds it to the sheet.
-        Returns True on success, False on failure.
-        """
-        placed_part_shape = self._try_place_part_on_sheet(part, sheet)
-        
-        # Final validation to ensure the returned part is valid before accepting it.
-        if placed_part_shape and sheet.is_placement_valid(placed_part_shape):
-            sheet_origin = sheet.get_origin()
-            placed_part_shape.placement = placed_part_shape.get_final_placement(sheet_origin)
-            sheet.add_part(PlacedPart(placed_part_shape))
-            return True
-        elif placed_part_shape:
-            FreeCAD.Console.PrintWarning(f"Nester algorithm returned an invalid placement for {part.id}. Discarding.\n")
-        
-        return False
+    def log(self, message, level="message"):
+        if self.log_callback:
+            self.log_callback(message)
+        else:
+            if level == "warning":
+                FreeCAD.Console.PrintWarning(f"NESTER: {message}\n")
+            else:
+                FreeCAD.Console.PrintMessage(f"NESTER: {message}\n")
 
     def nest(self, parts, sort=True):
-        """
-        Main nesting loop. Iterates through parts and calls the subclass's
-        sheet nesting implementation until all parts are placed or no more
-        can be placed.
-        """
+        """Main entry point for nesting."""
+        # Cleanup any debug objects from previous runs
+        doc = FreeCAD.ActiveDocument
+        if doc and doc.getObject("MinkowskiDebug"):
+            doc.removeObject("MinkowskiDebug")
+            doc.recompute()
 
+        if self.generations > 1:
+            return self._nest_genetic(parts)
+        else:
+            return self._nest_standard(parts, sort=sort)
+
+    def _nest_standard(self, parts, sort=True):
+        """Standard greedy nesting strategy."""
         self.parts_to_place = list(parts)
         self.sheets = []
+        
         if sort:
-            self._sort_parts_by_area() # Sorts self.parts_to_place in-place
-        unplaced_shapes = []
-
+            self.parts_to_place.sort(key=lambda p: p.area, reverse=True)
+            
+        unplaced_parts = []
+        
+        # Main Loop
         while self.parts_to_place:
-            original_shape = self.parts_to_place.pop(0) # Get and remove the largest remaining part
+            part = self.parts_to_place.pop(0)
             placed = False
             
-            # Try to place on existing sheets first
+            # 1. Try existing sheets
             for sheet in self.sheets:
-                if self._attempt_placement_on_sheet(original_shape, sheet):
+                if self._attempt_placement_on_sheet(part, sheet):
                     placed = True
                     break
             
+            # 2. Try new sheet
             if not placed:
-                # If it didn't fit on any existing sheet, try a new one
-                new_sheet_id = len(self.sheets)
-                new_sheet = Sheet(new_sheet_id, self._bin_width, self._bin_height, spacing=self.spacing) # Create a new sheet
-                
-                if self._attempt_placement_on_sheet(original_shape, new_sheet):
+                new_sheet = Sheet(len(self.sheets), self.bin_width, self.bin_height, spacing=self.spacing)
+                if self._attempt_placement_on_sheet(part, new_sheet):
                     self.sheets.append(new_sheet)
                     placed = True
                 else:
-                    # If it can't even fit on an empty sheet, it's unplaceable
-                    unplaced_shapes.append(original_shape)
-
-        return self.sheets, unplaced_shapes
-
-
-    def _sort_parts_by_area(self):
-        """Sorts the list of parts to be nested in-place, largest area first."""
-        self.parts_to_place.sort(key=lambda p: p.area, reverse=True)
-
-    def _try_place_part_on_sheet(self, part_to_place, sheet):
-        """
-        Subclasses must implement this. Tries to place a single shape on a given sheet.
-        Returns the placed shape on success, None on failure.
-        """
-        raise NotImplementedError
-
-    def _try_rotation_shake(self, part_to_shake, sheet, initial_bl_x, initial_bl_y, initial_angle, side_direction, i, gravity_direction):
-        """Helper to attempt a single rotational shake."""
-        if not (self.anneal_rotate_enabled and part_to_shake.rotation_steps > 1):
-            return False
-
-        # The 'i' from the main anneal loop determines which rotation to try.
-        # We try rotations alternating from the current one.
-        rotation_index_offset = (i // 2) + 1
-        # side_direction is +1 or -1, so we check rotations on either side of the current one.
-        rotation_index = (round(initial_angle / (360.0 / part_to_shake.rotation_steps)) + rotation_index_offset * side_direction) % part_to_shake.rotation_steps
-        new_angle = rotation_index * (360.0 / part_to_shake.rotation_steps)
-
-        if abs(new_angle - initial_angle) % 360 < 1e-6:
-            return False # Skip if it's the same angle
-
-        # Reset part to its pre-shake state for this attempt
-        part_to_shake.move_to(initial_bl_x, initial_bl_y)
-        part_to_shake.set_rotation(new_angle, reposition=False)
-        part_to_shake.move_to(initial_bl_x, initial_bl_y) # Ensure it stays in place
-
-        if self.update_callback: self.update_callback(part_to_shake, sheet)
-
-        is_valid_shake = sheet.is_placement_valid(part_to_shake, part_to_ignore=part_to_shake)
-        if not is_valid_shake:
-            return False # This rotation is not valid.
-
-        # The shake is valid. Now, check if the part can fall further from this new position.
-        gravity_dx = gravity_direction[0] * self.step_size
-        gravity_dy = gravity_direction[1] * self.step_size
-        part_to_shake.move(gravity_dx, gravity_dy)
-        can_fall_further = sheet.is_placement_valid(part_to_shake, part_to_ignore=part_to_shake)
-        part_to_shake.move(-gravity_dx, -gravity_dy) # Revert the temporary move
-
-        return can_fall_further
-
-    def _try_translation_shake(self, part_to_shake, sheet, initial_bl_x, initial_bl_y, initial_angle, current_gravity_direction, side_direction, step_index):
-        """Helper to attempt a single translational shake."""
-        if not self.anneal_translate_enabled:
-            return False
-
-        # Reset part to its pre-shake state for this attempt
-        part_to_shake.move_to(initial_bl_x, initial_bl_y) # No UI update
-        part_to_shake.set_rotation(initial_angle, reposition=False) # No UI update
-
-        amplitude = self.step_size * (step_index + 1)
-
-        # Determine the perpendicular direction for this shake
-        perp_dir_for_shake = (-current_gravity_direction[1], current_gravity_direction[0])
-
-        shake_dx = perp_dir_for_shake[0] * amplitude * side_direction
-        shake_dy = perp_dir_for_shake[1] * amplitude * side_direction
-
-        new_x = initial_bl_x + shake_dx
-        new_y = initial_bl_y + shake_dy
-        part_to_shake.move_to(new_x, new_y) # No UI update
-
-        if self.update_callback:
-            self.update_callback(part_to_shake, sheet)
-
-        is_valid_shake = sheet.is_placement_valid(part_to_shake, part_to_ignore=part_to_shake)
-        if not is_valid_shake:
-            return False
-
-        # The shake is valid. Now, check if the part can fall further from this new position.
-        # This makes the anneal "smarter" by seeking productive moves.
-        gravity_dx = current_gravity_direction[0] * self.step_size
-        gravity_dy = current_gravity_direction[1] * self.step_size
-        part_to_shake.move(gravity_dx, gravity_dy)
-        can_fall_further = sheet.is_placement_valid(part_to_shake, part_to_ignore=part_to_shake)
-        part_to_shake.move(-gravity_dx, -gravity_dy) # Revert the temporary move
+                    unplaced_parts.append(part)
         
-        return can_fall_further
+        return self.sheets, unplaced_parts
 
-    def _report_anneal_success(self, part_to_shake, sheet, new_pos):
-        """
-        Helper function to finalize a successful anneal move. It logs the success,
-        updates the UI via callback, and returns the new position and rotation.
-        """
-        if self.update_callback:
-            self.update_callback(part_to_shake, sheet)
-        # This function no longer needs to return anything.
-        # The calling function will check the part's final position.
-
-    def _anneal_part(self, part_to_shake, sheet, current_gravity_direction, rotate_enabled=True, translate_enabled=True):
-        """ 
-        Attempts to "anneal" a shape out of a collision by trying small
-        perpendicular and/or rotational movements. This is a local search
-        mechanism to find a valid spot when a part gets stuck.
-        Returns a tuple of (position, rotation) on success. If it can't find
-        a valid position, it reverts the part to its starting state.
-        """
-
-        # We must use the bottom-left corner for position, as this is what `move_to` uses.
-        # Using the centroid was causing a coordinate mismatch.
-        initial_bl_x, initial_bl_y, _, _ = part_to_shake.bounding_box()
-        start_pos = (initial_bl_x, initial_bl_y)
-        start_rot = part_to_shake.angle # This is the angle to return if shaking fails
-
-        if self.anneal_steps == 0 or (not self.anneal_rotate_enabled and not self.anneal_translate_enabled) or (not rotate_enabled and not translate_enabled):
-            return
-
-        num_amplitude_levels = self.anneal_steps
-        for i in range(num_amplitude_levels):
-            # To prevent bias where the part always "walks" in the first successful direction,
-            # we can randomize the order in which we try the two shake directions.
-            shake_directions = [1, -1]
-            random.shuffle(shake_directions)
-
-            for side_dir in shake_directions: # Try both directions for each amplitude
-                # --- Try a translational shake ---
-                if translate_enabled:
-                    # This function now only checks if the shake position is valid, not if it can fall.
-                    # It returns the new position if valid, otherwise None.
-                    new_pos = self._try_translation_shake(part_to_shake, sheet, initial_bl_x, initial_bl_y, start_rot, current_gravity_direction, side_direction=side_dir, step_index=i)
-                    
-                    if new_pos:
-                        # The translation was valid. From this new position, try rotating.
-                        is_productive_rotation = self._try_rotation_from_new_pos(part_to_shake, sheet, current_gravity_direction)
-                        if is_productive_rotation:
-                            new_bl_x, new_bl_y, _, _ = part_to_shake.bounding_box()
-                            self._report_anneal_success(part_to_shake, sheet, (new_bl_x, new_bl_y))
-                            return # Found a productive compound move.
-
-                # If translation is disabled or failed, try a pure rotation from the original spot.
-                if rotate_enabled and self._try_rotation_shake(part_to_shake, sheet, initial_bl_x, initial_bl_y, start_rot, side_direction=side_dir, i=i, gravity_direction=current_gravity_direction):
-                    new_bl_x, new_bl_y, _, _ = part_to_shake.bounding_box()
-                    self._report_anneal_success(part_to_shake, sheet, (new_bl_x, new_bl_y))
-                    return # Found a valid move, exit.
-
-        # If the loop finishes, no valid shake was found.
-        # Revert the part to its original state before returning the initial position.
-        part_to_shake.move_to(start_pos[0], start_pos[1])
-        part_to_shake.set_rotation(start_rot)
-        if self.update_callback:
-            self.update_callback(part_to_shake, sheet)
-
-    def _try_rotation_from_new_pos(self, part_to_shake, sheet, gravity_direction):
-        """
-        After a successful translation, this function tries all possible rotations
-        from that new spot to see if any allow a gravity move.
-        """
-        import copy
-        if not (self.anneal_rotate_enabled and part_to_shake.rotation_steps > 1):
-            return False
-
-        initial_bl_x, initial_bl_y, _, _ = part_to_shake.bounding_box()
-        initial_angle = part_to_shake.angle
-        best_angle = None
-        max_fall_distance = -1.0
-
-        for i in range(part_to_shake.rotation_steps):
-            angle = i * (360.0 / part_to_shake.rotation_steps)
+    def _nest_genetic(self, parts):
+        """Genetic optimization loop."""
+        self.log(f"Starting Genetic Optimization with {self.generations} generations.")
+        
+        population = [genetic_utils.create_random_chromosome(parts, self.rotation_steps) 
+                      for _ in range(self.population_size)]
+        
+        best_solution = None
+        
+        for gen in range(self.generations):
+            self.log(f"Generation {gen+1}/{self.generations}...")
+            ranked_population = []
             
-            # Create a temporary copy to test this rotation
-            test_part = copy.deepcopy(part_to_shake)
-            test_part.set_rotation(angle, reposition=False)
-            test_part.move_to(initial_bl_x, initial_bl_y) # Keep it in the same spot
+            for chrom in population:
+                fitness = self._calculate_fitness(chrom)
+                ranked_population.append((fitness, chrom))
+            
+            ranked_population.sort(key=lambda x: x[0])
+            
+            if best_solution is None or ranked_population[0][0] < best_solution[0]:
+                best_solution = ranked_population[0]
+                self.log(f"  > New Best Fitness: {best_solution[0]:.2f}")
+            
+            if gen < self.generations - 1:
+                next_pop = [sol[1] for sol in ranked_population[:self.elite_size]]
+                while len(next_pop) < self.population_size:
+                    p1 = genetic_utils.tournament_selection(ranked_population)
+                    p2 = genetic_utils.tournament_selection(ranked_population)
+                    child = genetic_utils.ordered_crossover(p1, p2)
+                    genetic_utils.mutate_chromosome(child, self.mutation_rate, self.rotation_steps)
+                    next_pop.append(child)
+                population = next_pop
 
-            if sheet.is_placement_valid(test_part, part_to_ignore=part_to_shake):
-                # This rotation is valid. Now, measure how far it can fall.
-                fall_distance = 0
-                while True:
-                    test_part.move(gravity_direction[0] * self.step_size, gravity_direction[1] * self.step_size)
-                    if sheet.is_placement_valid(test_part, part_to_ignore=part_to_shake):
-                        fall_distance += self.step_size
-                    else:
-                        break # Collision
-                
-                if fall_distance > max_fall_distance:
-                    max_fall_distance = fall_distance
-                    best_angle = angle
+        self.log("Running final placement for best solution...")
+        return self._nest_standard(best_solution[1], sort=False)
 
-        if best_angle is not None and max_fall_distance > 0:
-            # A productive rotation was found. Apply it to the actual part.
-            part_to_shake.set_rotation(best_angle, reposition=False)
-            part_to_shake.move_to(initial_bl_x, initial_bl_y)
+    def _calculate_fitness(self, chromosome):
+        """Calculates fitness (lower is better)."""
+        test_parts = [copy.deepcopy(p) for p in chromosome]
+        sheets, unplaced = self._nest_standard(test_parts, sort=False)
+        
+        if not sheets: return float('inf')
+        
+        fitness = len(sheets) * self.bin_width * self.bin_height
+        
+        last_sheet = sheets[-1]
+        if last_sheet.parts:
+            # Approx bounding box area of used space
+            min_x = min(p.shape.bounding_box()[0] for p in last_sheet.parts)
+            min_y = min(p.shape.bounding_box()[1] for p in last_sheet.parts)
+            max_x = max(p.shape.bounding_box()[0] + p.shape.bounding_box()[2] for p in last_sheet.parts)
+            max_y = max(p.shape.bounding_box()[1] + p.shape.bounding_box()[3] for p in last_sheet.parts)
+            fitness += (max_x - min_x) * (max_y - min_y)
+            
+        if unplaced:
+            fitness += len(unplaced) * self.bin_width * self.bin_height * 10
+            
+        return fitness
 
-            if self.update_callback: self.update_callback(part_to_shake, sheet)
-            return True
-        else:
-            # No productive rotation found, revert to the original state before this function was called.
-            part_to_shake.set_rotation(initial_angle, reposition=False)
-            part_to_shake.move_to(initial_bl_x, initial_bl_y)
-            return False
+    def _attempt_placement_on_sheet(self, part, sheet):
+        """Tries to place a part on a sheet. Returns True if successful."""
+        # Calculate union of existing parts for collision checking
+        other_polys = [p.shape.polygon for p in sheet.parts if p.shape.polygon]
+        union_others = unary_union(other_polys) if other_polys else None
+        
+        placed_part = self._try_place_part_on_sheet_logic(part, sheet, union_others)
+        
+        if placed_part:
+            # Double check validity with engine
+            if self.engine.is_placement_valid_with_holes(placed_part.polygon, sheet, union_others):
+                placed_part.placement = placed_part.get_final_placement(sheet.get_origin())
+                sheet.add_part(PlacedPart(placed_part))
+                return True
+        return False
+
+    def _try_place_part_on_sheet_logic(self, part, sheet, union_others):
+        """Parallel evaluation of rotations to find best spot."""
+        if part.original_polygon is None and part.polygon is not None:
+            part.original_polygon = part.polygon
+            
+        direction = self.search_direction
+        if direction is None:
+             angle_rad = random.uniform(0, 2 * math.pi)
+             direction = (math.cos(angle_rad), math.sin(angle_rad))
+
+        best_result = {'metric': float('inf')}
+        
+        with ThreadPoolExecutor() as executor:
+            angles = [i * (360.0 / self.rotation_steps) for i in range(self.rotation_steps)]
+            futures = {executor.submit(self._evaluate_rotation, angle, part, sheet, union_others, direction): angle for angle in angles}
+            
+            for future in as_completed(futures):
+                res = future.result()
+                if res and res['metric'] < best_result['metric']:
+                    best_result = res
+        
+        if best_result.get('x') is not None:
+             part.set_rotation(best_result['angle'], reposition=False)
+             curr = part.centroid
+             part.move(best_result['x'] - curr.x, best_result['y'] - curr.y)
+             return part
+        return None
+
+    def _evaluate_rotation(self, angle, part, sheet, union_others, direction):
+        """Evaluates one rotation."""
+        # 1. Get NFPs from Engine
+        nfps = self.engine.generate_nfps(part, sheet, angle)
+        
+        # 2. Get Candidates from Engine
+        rotated_poly = rotate(part.original_polygon, angle, origin='centroid')
+        hole_cands, ext_cands = self.engine.get_candidate_positions(nfps, rotated_poly)
+        
+        if not rotated_poly: return {'metric': float('inf')}
+        
+        # 3. Score Candidates (Local Logic)
+        centroid = rotated_poly.centroid
+        dir_x, dir_y = direction
+        
+        best = {'metric': float('inf')}
+        
+        # Check holes
+        for pt in hole_cands:
+            dx, dy = pt.x - centroid.x, pt.y - centroid.y
+            test_poly = translate(rotated_poly, xoff=dx, yoff=dy)
+
+            
+            if self.engine.is_placement_valid_with_holes(test_poly, sheet, union_others):
+                metric = pt.x * (-dir_x) + pt.y * (-dir_y)
+                if metric < best['metric']:
+                    best = {'x': pt.x, 'y': pt.y, 'angle': angle, 'metric': metric}
+
+        if best['metric'] != float('inf'): return best
+
+        # Check external
+        # Sort candidates for speed?
+        ext_cands.sort(key=lambda p: p.x * (-dir_x) + p.y * (-dir_y))
+        
+        for pt in ext_cands:
+            metric = pt.x * (-dir_x) + pt.y * (-dir_y)
+            if metric >= best['metric']: continue
+            
+            dx, dy = pt.x - centroid.x, pt.y - centroid.y
+            test_poly = translate(rotated_poly, xoff=dx, yoff=dy)
+            
+            if self.engine.is_placement_valid_with_holes(test_poly, sheet, union_others):
+                if metric < best['metric']:
+                    best = {'x': pt.x, 'y': pt.y, 'angle': angle, 'metric': metric}
+                return best # Found best sorted
+        
+        return best

@@ -124,22 +124,17 @@ class NestingController:
         
         self.ui.status_label.setText("Running nesting algorithm...")
         spacing = self.ui.part_spacing_input.value()
-        algorithm = 'Minkowski'
-
         algo_kwargs = {}
-
-
-        if algorithm == 'Minkowski':
-            if self.ui.minkowski_random_checkbox.isChecked():
-                algo_kwargs['search_direction'] = None
-            else:
-                # Same coordinate logic as gravity: 0=Down, 90=Right, etc.
-                angle_deg = (270 - self.ui.minkowski_direction_dial.value()) % 360
-                angle_rad = math.radians(angle_deg)
-                algo_kwargs['search_direction'] = (math.cos(angle_rad), math.sin(angle_rad))
-            
-            algo_kwargs['population_size'] = self.ui.minkowski_population_size_input.value()
-            algo_kwargs['generations'] = self.ui.minkowski_generations_input.value()
+        if self.ui.minkowski_random_checkbox.isChecked():
+            algo_kwargs['search_direction'] = None
+        else:
+            # Same coordinate logic as gravity: 0=Down, 90=Right, etc.
+            angle_deg = (270 - self.ui.minkowski_direction_dial.value()) % 360
+            angle_rad = math.radians(angle_deg)
+            algo_kwargs['search_direction'] = (math.cos(angle_rad), math.sin(angle_rad))
+        
+        algo_kwargs['population_size'] = self.ui.minkowski_population_size_input.value()
+        algo_kwargs['generations'] = self.ui.minkowski_generations_input.value()
 
         # --- Prepare UI parameters for controllers ---
         global_rotation_steps = self.ui.rotation_steps_spinbox.value() # This widget is in NestingPanel
@@ -166,7 +161,7 @@ class NestingController:
             sheets, remaining_parts_to_nest, total_steps = nest(
                 parts_to_nest,
                 self.ui.sheet_width_input.value(), self.ui.sheet_height_input.value(),
-                global_rotation_steps, algorithm, is_simulating,
+                global_rotation_steps, is_simulating,
                 **algo_kwargs
             )
 
