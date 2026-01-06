@@ -20,11 +20,12 @@ class PlacementOptimizer:
     """
     Handles the geometric logic of finding the best position for a part on a sheet.
     """
-    def __init__(self, engine, rotation_steps, search_direction, log_callback=None):
+    def __init__(self, engine, rotation_steps, search_direction, log_callback=None, trial_callback=None):
         self.engine = engine
         self.rotation_steps = max(1, rotation_steps)
         self.search_direction = search_direction
         self.log_callback = log_callback
+        self.trial_callback = trial_callback  # Called for each trial placement in simulation mode
 
     def log(self, message):
         if self.log_callback:
@@ -68,6 +69,9 @@ class PlacementOptimizer:
                 res = future.result()
                 if res and res['metric'] < best_result['metric']:
                     best_result = res
+                    # Call trial callback from main thread for each better result found
+                    if self.trial_callback and best_result.get('x') is not None:
+                        self.trial_callback(part, best_result['angle'], best_result['x'], best_result['y'])
         
         if best_result.get('x') is not None:
              part.set_rotation(best_result['angle'], reposition=False)
@@ -136,12 +140,6 @@ class PlacementOptimizer:
         # ext_cands.sort(key=lambda p: p.x * (-dir_x) + p.y * (-dir_y))
 
         for pt in ext_cands:
-            # Pruning (optional)
-            # metric = pt.x * (-dir_x) + pt.y * (-dir_y)
-            # if metric >= best['metric']: continue
-            
-            # Simple deduplication could be added here
-            
             valid_metric = score_point(pt)
             if valid_metric is not None:
                 if valid_metric < best['metric']:
@@ -168,10 +166,11 @@ class Nester:
         self.elite_size = max(1, int(self.population_size * 0.1))
         
         self.log_callback = kwargs.get("log_callback")
+        self.trial_callback = kwargs.get("trial_callback")  # For visualizing trial placements
         
         step_size = kwargs.get("step_size", 5.0) 
         self.engine = MinkowskiEngine(width, height, step_size, log_callback=self.log_callback)
-        self.optimizer = PlacementOptimizer(self.engine, rotation_steps, self.search_direction, self.log_callback)
+        self.optimizer = PlacementOptimizer(self.engine, rotation_steps, self.search_direction, self.log_callback, self.trial_callback)
 
         self.parts_to_place = []
         self.sheets = []

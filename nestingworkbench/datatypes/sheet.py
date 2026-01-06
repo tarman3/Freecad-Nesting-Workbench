@@ -313,9 +313,16 @@ class Sheet:
                     shape_obj.ShowBounds = ui_params.get('show_bounds', False)
                     shape_obj.ShowLabel = ui_params.get('add_labels', False)
                 else:
-                    # Simulation mode: just update the placement of the existing object
-                    shape_obj.Placement = final_placement
+                    # Simulation mode: only show and move the boundary object, hide the shape
+                    if hasattr(shape_obj, 'ViewObject'):
+                        shape_obj.ViewObject.Visibility = False
+                    
                     if hasattr(shape_obj, 'BoundaryObject') and shape_obj.BoundaryObject:
-                        shape_obj.BoundaryObject.Placement = shape_obj.Placement.copy()
+                        boundary = shape_obj.BoundaryObject
+                        boundary.Placement = final_placement
+                        if hasattr(boundary, 'ViewObject'):
+                            boundary.ViewObject.Visibility = True
+                            boundary.ViewObject.LineColor = (0.0, 0.7, 0.0)  # Green for simulation
+                            boundary.ViewObject.LineWidth = 2.0
             else:
                 pass # FreeCAD.Console.PrintWarning(f"DEBUG:     fc_object for part '{shape.id}' was None. Skipping drawing.\n")

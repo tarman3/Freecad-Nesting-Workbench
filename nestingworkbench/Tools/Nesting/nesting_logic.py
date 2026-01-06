@@ -1,5 +1,6 @@
 from PySide import QtGui
 import FreeCAD
+import Part
 import copy
 
 from .algorithms import nesting_strategy
@@ -11,13 +12,65 @@ class NestingDependencyError(Exception):
 try:
     # Check for shapely availability without importing specific functions
     import shapely
+    from shapely.affinity import rotate, translate
     SHAPELY_AVAILABLE = True
 except ImportError:
     SHAPELY_AVAILABLE = False
 
+# Global reference for trial visualization object
+_trial_viz_obj = None
+
+def _draw_trial_bounds(part, angle, x, y):
+    """Draws the boundary polygon at a trial position during simulation."""
+    global _trial_viz_obj
+    
+    doc = FreeCAD.ActiveDocument
+    if not doc or not FreeCAD.GuiUp:
+        return
+    
+    # Get or create the trial visualization object
+    if _trial_viz_obj is None or _trial_viz_obj.Name not in [o.Name for o in doc.Objects]:
+        _trial_viz_obj = doc.addObject("Part::Feature", "TrialBounds")
+        if hasattr(_trial_viz_obj, "ViewObject"):
+            _trial_viz_obj.ViewObject.LineColor = (0.0, 0.5, 1.0)  # Blue
+            _trial_viz_obj.ViewObject.LineWidth = 1.5
+            _trial_viz_obj.ViewObject.Transparency = 50
+    
+    try:
+        # Get the boundary polygon from the part
+        if hasattr(part, 'polygon') and part.polygon:
+            # Rotate and translate the polygon to the trial position
+            rotated_poly = rotate(part.polygon, angle, origin='centroid')
+            translated_poly = translate(rotated_poly, xoff=x, yoff=y)
+            
+            # Convert shapely polygon to FreeCAD wire
+            coords = list(translated_poly.exterior.coords)
+            points = [FreeCAD.Vector(c[0], c[1], 0) for c in coords]
+            wire = Part.makePolygon(points)
+            _trial_viz_obj.Shape = wire
+            
+            # Force UI update
+            QtGui.QApplication.processEvents()
+    except Exception as e:
+        pass  # Silently ignore drawing errors
+
+def _cleanup_trial_viz():
+    """Removes the trial visualization object."""
+    global _trial_viz_obj
+    if _trial_viz_obj:
+        try:
+            doc = FreeCAD.ActiveDocument
+            if doc and _trial_viz_obj.Name in [o.Name for o in doc.Objects]:
+                doc.removeObject(_trial_viz_obj.Name)
+        except:
+            pass
+        _trial_viz_obj = None
+
 # --- Public Function ---
 def nest(parts, width, height, rotation_steps=1, simulate=False, **kwargs):
     """Convenience function to run the nesting algorithm."""
+    global _trial_viz_obj
+    
     # If simulation is enabled, the nester needs the original list of parts
     # that are linked to the visible FreeCAD objects (fc_object).
     # If simulation is disabled, we MUST use a deepcopy to prevent the nester
@@ -35,6 +88,10 @@ def nest(parts, width, height, rotation_steps=1, simulate=False, **kwargs):
         show_shapely_installation_instructions()
         raise NestingDependencyError("The selected algorithm requires the 'Shapely' library, which is not installed.")
 
+    # If simulation is enabled, add trial_callback to kwargs
+    if simulate:
+        kwargs['trial_callback'] = _draw_trial_bounds
+
     # The controller now passes a fresh list of all parts to be nested.
     # The nester algorithms are responsible for the full multi-sheet nesting run.
     nester = nesting_strategy.Nester(width, height, rotation_steps, **kwargs)
@@ -45,6 +102,11 @@ def nest(parts, width, height, rotation_steps=1, simulate=False, **kwargs):
         nester.update_callback = lambda part, sheet: (sheet.draw(FreeCAD.ActiveDocument, {}, transient_part=part), QtGui.QApplication.processEvents())
 
     result = nester.nest(parts_to_process)
+    
+    # Cleanup trial visualization
+    if simulate:
+        _cleanup_trial_viz()
+    
     # Some nesters may return a 3-tuple (sheets, unplaced, steps), while others
     # may return a 2-tuple (sheets, unplaced). We handle both cases here.
     if len(result) == 3:
