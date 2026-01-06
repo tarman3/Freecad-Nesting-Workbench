@@ -129,8 +129,12 @@ class Shape:
 
     def get_final_placement(self, sheet_origin=None):
         """
-        Calculates the final FreeCAD.Placement for the object.
-        This method uses the current state of the underlying ShapeBounds object.
+        Calculates the final FreeCAD.Placement for the container.
+        
+        CLEAN OFFSET DESIGN:
+        - The child shape inside the container has placement = -source_centroid (centered at origin)
+        - The container placement should position the origin at the target (nested) position
+        - So container.Placement.Base = sheet_origin + nested_centroid
 
         :param sheet_origin: FreeCAD.Vector for the sheet's bottom-left corner.
         :return: A final FreeCAD.Placement object.
@@ -139,26 +143,20 @@ class Shape:
             return FreeCAD.Placement()
 
         if sheet_origin is None:
-            sheet_origin = FreeCAD.Vector(0,0,0)
+            sheet_origin = FreeCAD.Vector(0, 0, 0)
 
+        # Where the nested polygon's center ended up
         nested_centroid_shapely = self.polygon.centroid
         nested_centroid = FreeCAD.Vector(nested_centroid_shapely.x, nested_centroid_shapely.y, 0)
+        
+        # Container position = target world position for the shape's center
+        container_pos = sheet_origin + nested_centroid
+        
         angle_deg = self._angle
-
-        # Define the rotation.
         rotation = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), angle_deg)
-
-        # The final target position for the shape's source_centroid.
-        target_centroid_pos = sheet_origin + nested_centroid
-
-        # The master shape's geometry has already been translated so that its original
-        # source_centroid is at the origin. Therefore, the center of rotation for
-        # the final placement must also be the origin. Using the original source_centroid
-        # here would apply a double correction and result in an offset.
-        center = FreeCAD.Vector(0, 0, 0)
-
-        # Create the final placement.
-        return FreeCAD.Placement(target_centroid_pos, rotation, center)
+        
+        # Rotation center is at origin (where the centered shape is)
+        return FreeCAD.Placement(container_pos, rotation, FreeCAD.Vector(0, 0, 0))
 
     def set_rotation(self, angle, reposition=True):
         """

@@ -202,9 +202,13 @@ class Sheet:
     def _draw_single_part(self, doc, shape, sheet_origin, ui_params, shapes_group=None, parts_to_place_group=None):
         """Helper to draw a single part, either for final placement or simulation."""
         if shape:
-            # FreeCAD.Console.PrintMessage(f"DEBUG:   Attempting to draw part '{shape.id}' (id={id(shape)}). Checking for fc_object...\n")
             # For final drawing, placement is pre-calculated. For simulation, we calculate it now.
             final_placement = shape.placement if shape.placement else shape.get_final_placement(sheet_origin)
+            
+            # Debug: trace placement calculation
+            if shape.polygon:
+                nested_centroid = shape.polygon.centroid
+                FreeCAD.Console.PrintMessage(f"Placement '{shape.id}': nested_centroid=({nested_centroid.x:.1f}, {nested_centroid.y:.1f}), container_pos={final_placement.Base}\n")
 
             shape_obj = shape.fc_object
             if shape_obj:

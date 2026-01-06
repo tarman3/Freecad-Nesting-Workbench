@@ -115,30 +115,47 @@ class ShapePreparer:
         """
         Creates a temporary copy of an existing master shape for use in the sandbox.
         
-        IMPORTANT: We create NEW objects with addObject() and copy only the Shape data,
-        rather than using copyObject(). This ensures no internal FreeCAD links persist
-        between the original master in Layout_000 and the temp copy in Layout_temp.
+        CLEAN OFFSET DESIGN: Reads SourceCentroid from the original container instead of
+        deriving it. This ensures consistency between initial nesting and re-nesting.
         """
         original_label = label.replace("master_shape_", "")
         
-        # 1. Create new temp container and shape object (NOT copyObject!)
+        # Find the original container (parent of master_obj)
+        original_container = None
+        if master_obj.InList:
+            for parent in master_obj.InList:
+                if hasattr(parent, "SourceCentroid"):
+                    original_container = parent
+                    break
+        
+        # 1. Create new temp container
         temp_container = self.doc.addObject("App::Part", f"temp_master_{original_label}")
         master_shapes_group.addObject(temp_container)
         
-        # Create a new Part::Feature and copy only the geometry
+        # *** CLEAN OFFSET DESIGN ***
+        # Copy SourceCentroid from the original container - this is THE source of truth
+        temp_container.addProperty("App::PropertyVector", "SourceCentroid", "Nesting", "Original geometry center")
+        if original_container and hasattr(original_container, "SourceCentroid"):
+            temp_container.SourceCentroid = original_container.SourceCentroid
+        else:
+            # Fallback: calculate from geometry (less ideal but works)
+            temp_container.SourceCentroid = master_obj.Shape.CenterOfMass
+        
+        # 2. Create the shape object - copy geometry, center at origin with -source_centroid
         temp_master_obj = self.doc.addObject("Part::Feature", f"temp_shape_{original_label}")
-        temp_master_obj.Label = f"master_shape_{original_label}"  # Match expected naming
+        temp_master_obj.Label = f"master_shape_{original_label}"
         temp_master_obj.Shape = master_obj.Shape.copy()
-        temp_master_obj.Placement = master_obj.Placement  # Copy placement
+        # Center the shape at the container's origin
+        source_centroid = temp_container.SourceCentroid
+        temp_master_obj.Placement = FreeCAD.Placement(source_centroid.negative(), FreeCAD.Rotation())
         temp_container.addObject(temp_master_obj)
         
-        # 2. Clone Boundary Object (also using addObject, not copyObject)
+        # 3. Clone Boundary Object
         if hasattr(master_obj, "BoundaryObject") and master_obj.BoundaryObject:
             temp_bound = self.doc.addObject("Part::Feature", f"temp_boundary_{original_label}")
             temp_bound.Shape = master_obj.BoundaryObject.Shape.copy()
             temp_container.addObject(temp_bound)
             
-            # Add the BoundaryObject property if it doesn't exist
             if not hasattr(temp_master_obj, "BoundaryObject"):
                 temp_master_obj.addProperty("App::PropertyLink", "BoundaryObject", "Nesting", "Boundary object")
             temp_master_obj.BoundaryObject = temp_bound
@@ -151,11 +168,12 @@ class ShapePreparer:
         if hasattr(temp_container, "ViewObject"): 
             temp_container.ViewObject.Visibility = False
 
-        # 3. Copy Quantity property
+        # 4. Copy Quantity property
         quantity, _ = quantities.get(original_label, (1, 1))
         temp_container.addProperty("App::PropertyInteger", "Quantity", "Nest", "Number of instances").Quantity = quantity
 
-        # 4. Build Shape wrapper - reuse boundary geometry from the original
+        # 5. Build Shape wrapper using the stored SourceCentroid
+        temp_shape_wrapper = None
         if hasattr(temp_master_obj, "BoundaryObject") and temp_master_obj.BoundaryObject:
             try:
                 from shapely.geometry import Polygon
@@ -182,17 +200,21 @@ class ShapePreparer:
                         
                         temp_shape_wrapper = Shape(temp_master_obj)
                         temp_shape_wrapper.polygon = final_poly
-                        temp_shape_wrapper.source_centroid = temp_master_obj.Placement.Base.negative()
+                        # Use the stored SourceCentroid - THE source of truth
+                        temp_shape_wrapper.source_centroid = temp_container.SourceCentroid
                         
                         self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
             except Exception as e:
                 FreeCAD.Console.PrintWarning(f"Shape reload failed for '{label}': {e}. Recalculating.\n")
                 temp_shape_wrapper = None
         
-        # 5. Recalculate if reuse failed
+        # 6. Recalculate if reuse failed
         if not temp_shape_wrapper:
             temp_shape_wrapper = Shape(temp_master_obj)
             shape_processor.create_single_nesting_part(temp_shape_wrapper, temp_master_obj, spacing, boundary_resolution)
+            # Update the container's SourceCentroid with the recalculated value
+            if temp_shape_wrapper.source_centroid:
+                temp_container.SourceCentroid = temp_shape_wrapper.source_centroid
             self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
 
         return temp_master_obj, temp_shape_wrapper
@@ -209,15 +231,27 @@ class ShapePreparer:
         quantity, _ = quantities.get(label, (1, 1))
         master_container.addProperty("App::PropertyInteger", "Quantity", "Nest", "Number of instances").Quantity = quantity
 
+        # *** CLEAN OFFSET DESIGN ***
+        # Store the source_centroid as a property on the container - this is THE source of truth
+        # for the offset between the Shapely polygon (centered at 0,0) and the FreeCAD geometry
+        master_container.addProperty("App::PropertyVector", "SourceCentroid", "Nesting", "Original geometry center")
+        if temp_shape_wrapper.source_centroid:
+            master_container.SourceCentroid = temp_shape_wrapper.source_centroid
+        else:
+            # Fallback: use the shape's actual center of mass
+            master_container.SourceCentroid = master_obj.Shape.CenterOfMass
+
         # Hide container
         if hasattr(master_container, "ViewObject"):
             master_container.ViewObject.Visibility = False
             
         master_shape_obj = create_shape_object(f"master_shape_{label}")
         master_shape_obj.Shape = master_obj.Shape.copy()
-
-        if temp_shape_wrapper.source_centroid:
-            master_shape_obj.Placement = FreeCAD.Placement(temp_shape_wrapper.source_centroid.negative(), FreeCAD.Rotation())
+        
+        # Center the shape at the container's origin by offsetting by -source_centroid
+        # This aligns the shape with the boundary (which is already centered at 0,0)
+        source_centroid = master_container.SourceCentroid
+        master_shape_obj.Placement = FreeCAD.Placement(source_centroid.negative(), FreeCAD.Rotation())
         master_container.addObject(master_shape_obj)
 
         if temp_shape_wrapper.polygon:
@@ -242,11 +276,22 @@ class ShapePreparer:
         current_x = 0
         y_offset = -max_master_height - spacing * 4 
         
+        FreeCAD.Console.PrintMessage(f"Arranging {len(masters_to_place)} master shapes at y_offset={y_offset:.1f}\n")
+        
         for container, shape_wrapper in masters_to_place:
-            container.Placement = FreeCAD.Placement(FreeCAD.Vector(current_x, y_offset, 0), FreeCAD.Rotation())
-            # Use shape_wrapper bounds, not container.Shape (App::Part has no Shape)
+            # Get the SourceCentroid - this tells us where the shape's center is in world space
+            source_centroid = getattr(container, "SourceCentroid", FreeCAD.Vector(0, 0, 0))
+            
+            # To place the shape's CENTER at (current_x, y_offset), we set the container position
+            # to (target_position - source_centroid), since the shape geometry is at source_centroid
+            container_pos = FreeCAD.Vector(current_x - source_centroid.x, y_offset - source_centroid.y, 0)
+            container.Placement = FreeCAD.Placement(container_pos, FreeCAD.Rotation())
+            
+            # bounds is (min_x, min_y, width, height) of the Shapely polygon (centered at 0,0)
             bounds = shape_wrapper.bounding_box()
-            width = bounds[2] - bounds[0] if bounds else 100
+            width = bounds[2] if bounds else 100
+            
+            FreeCAD.Console.PrintMessage(f"  -> Master '{container.Label}': target_x={current_x:.1f}, source_centroid={source_centroid}, container_pos={container_pos}\n")
             current_x += width + spacing * 2
 
     def _create_nesting_instances(self, master_shapes_map, quantities, master_shape_obj_map, master_geometry_cache, ui_settings, parts_group):
@@ -289,15 +334,23 @@ class ShapePreparer:
                 # Create temp copy using addObject (NOT copyObject to avoid link corruption)
                 part_copy = self.doc.addObject("Part::Feature", f"part_{shape_instance.id}")
                 part_copy.Shape = master_shape_obj.Shape.copy()
-                part_copy.Placement = master_shape_obj.Placement
+                # CLEAN OFFSET DESIGN: Leave placement at identity - shape stays at natural position
+                part_copy.Placement = FreeCAD.Placement()  # Identity
                 
                 # Copy boundary if exists
                 if hasattr(master_shape_obj, "BoundaryObject") and master_shape_obj.BoundaryObject:
                     boundary_copy = self.doc.addObject("Part::Feature", f"boundary_{shape_instance.id}")
                     boundary_copy.Shape = master_shape_obj.BoundaryObject.Shape.copy()
+                    # Hide initially - will be shown by simulation/drawing code
+                    if hasattr(boundary_copy, "ViewObject"):
+                        boundary_copy.ViewObject.Visibility = False
                     part_copy.addProperty("App::PropertyLink", "BoundaryObject", "Nesting", "Boundary object")
                     part_copy.BoundaryObject = boundary_copy
                     parts_to_place_group.addObject(boundary_copy)
+                
+                # Hide part initially - will be positioned and shown by simulation/drawing code
+                if hasattr(part_copy, "ViewObject"):
+                    part_copy.ViewObject.Visibility = False
                 
                 parts_to_place_group.addObject(part_copy)
                 shape_instance.fc_object = part_copy
