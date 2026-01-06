@@ -295,7 +295,22 @@ class NestingController:
     def finalize_job(self):
         """Called when User clicks OK."""
         if self.current_job:
-            self.current_job.commit()
+            final_layout = self.current_job.commit()
+            
+            # Update UI reference so toggle_bounds works on the new layout
+            self.ui.current_layout = final_layout
+            
+            # Ensure layout is visible and MasterShapes is hidden
+            if final_layout and hasattr(final_layout, "ViewObject"):
+                final_layout.ViewObject.Visibility = True
+                
+            if final_layout and hasattr(final_layout, "Group"):
+                for child in final_layout.Group:
+                    if child.Label.startswith("MasterShapes") and hasattr(child, "ViewObject"):
+                        child.ViewObject.Visibility = False
+                    elif child.Label.startswith("Sheet_") and hasattr(child, "ViewObject"):
+                        child.ViewObject.Visibility = True
+            
             self.current_job = None
             FreeCAD.Console.PrintMessage("Job Finalized & Committed.\n")
             self.doc.recompute()
@@ -316,11 +331,14 @@ class NestingController:
                     if hasattr(target, "ViewObject"):
                         target.ViewObject.Visibility = True
                     
-                    # Force visibility on Sheets
                     if hasattr(target, "Group"):
                         for child in target.Group:
+                            # Show Sheets
                             if child.Label.startswith("Sheet_") and hasattr(child, "ViewObject"):
                                 child.ViewObject.Visibility = True
+                            # Hide MasterShapes
+                            if child.Label.startswith("MasterShapes") and hasattr(child, "ViewObject"):
+                                child.ViewObject.Visibility = False
                 except: pass
             
             self.current_job = None
@@ -331,12 +349,28 @@ class NestingController:
         is_visible = self.ui.show_bounds_checkbox.isChecked()
         current_layout = getattr(self.ui, 'current_layout', None)
         
-        if not current_layout: return
+        if not current_layout: 
+            FreeCAD.Console.PrintWarning("Toggle bounds: No current_layout set.\n")
+            return
 
-        # Recursively find parts with ShowBounds property
+        FreeCAD.Console.PrintMessage(f"Toggle bounds: Setting visibility to {is_visible} on layout '{current_layout.Label}'\n")
+        
+        # Recursively find and toggle bounds visibility
         def set_show_bounds(obj):
+            # Set ShowBounds property if exists
             if hasattr(obj, "ShowBounds"):
                 obj.ShowBounds = is_visible
+                
+            # Toggle BoundaryObject visibility if linked
+            if hasattr(obj, "BoundaryObject") and obj.BoundaryObject:
+                if hasattr(obj.BoundaryObject, "ViewObject"):
+                    obj.BoundaryObject.ViewObject.Visibility = is_visible
+                    
+            # Also check if this object IS a boundary (by label pattern)
+            if obj.Label.startswith("boundary_") and hasattr(obj, "ViewObject"):
+                obj.ViewObject.Visibility = is_visible
+                
+            # Recurse into children
             if hasattr(obj, "Group"):
                 for child in obj.Group:
                     set_show_bounds(child)

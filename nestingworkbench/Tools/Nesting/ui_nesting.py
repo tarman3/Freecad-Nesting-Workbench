@@ -269,13 +269,17 @@ class NestingPanel(QtGui.QWidget):
             rotation_steps_map = {}
             
             for master_container in master_shapes_group.Group:
+                FreeCAD.Console.PrintMessage(f"DEBUG LOAD: Checking container '{master_container.Label}'...\n")
                 # Use a relaxed check for the container to ensure robust loading.
                 # While we enforce "master_" naming on write, reading should be tolerant
                 # to handle potential legacy or manually modified files.
                 if hasattr(master_container, "Group"): 
                     # The object to load is the 'master_shape_...' object inside the container.
                     shape_obj = next((child for child in master_container.Group if child.Label.startswith("master_shape_")), None)
-                    if shape_obj and hasattr(shape_obj, "Proxy"):
+                    FreeCAD.Console.PrintMessage(f"DEBUG LOAD:   -> Found shape_obj: {shape_obj.Label if shape_obj else 'None'}, has Proxy: {hasattr(shape_obj, 'Proxy') if shape_obj else 'N/A'}\n")
+                    # Note: We no longer require Proxy, as it may be lost during copyObject.
+                    # The shape geometry is what we need.
+                    if shape_obj and hasattr(shape_obj, "Shape"):
                         shapes_to_load.append(shape_obj)
                         
                         # Recover properties from container
@@ -285,6 +289,8 @@ class NestingPanel(QtGui.QWidget):
                             rotation_overrides[shape_obj.Label] = master_container.PartRotationOverride
                         if hasattr(master_container, "PartRotationSteps"):
                             rotation_steps_map[shape_obj.Label] = master_container.PartRotationSteps
+            
+            FreeCAD.Console.PrintMessage(f"DEBUG LOAD: Total shapes_to_load: {len(shapes_to_load)}\n")
             
             self.load_shapes(
                 shapes_to_load, 

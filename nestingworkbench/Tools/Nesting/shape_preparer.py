@@ -112,100 +112,92 @@ class ShapePreparer:
         return master_shapes_group
 
     def _create_temp_from_reloading(self, master_obj, label, quantities, temp_shape_wrapper, spacing, boundary_resolution, cache_key, layout_obj, master_shapes_group):
-        # 1. Clone Original to Temp
-        temp_master_obj = self.doc.copyObject(master_obj)
-        # Keep same label logic
+        """
+        Creates a temporary copy of an existing master shape for use in the sandbox.
         
+        IMPORTANT: We create NEW objects with addObject() and copy only the Shape data,
+        rather than using copyObject(). This ensures no internal FreeCAD links persist
+        between the original master in Layout_000 and the temp copy in Layout_temp.
+        """
         original_label = label.replace("master_shape_", "")
+        
+        # 1. Create new temp container and shape object (NOT copyObject!)
         temp_container = self.doc.addObject("App::Part", f"temp_master_{original_label}")
         master_shapes_group.addObject(temp_container)
+        
+        # Create a new Part::Feature and copy only the geometry
+        temp_master_obj = self.doc.addObject("Part::Feature", f"temp_shape_{original_label}")
+        temp_master_obj.Label = f"master_shape_{original_label}"  # Match expected naming
+        temp_master_obj.Shape = master_obj.Shape.copy()
+        temp_master_obj.Placement = master_obj.Placement  # Copy placement
         temp_container.addObject(temp_master_obj)
         
-        # 2. Clone Boundary Object
+        # 2. Clone Boundary Object (also using addObject, not copyObject)
         if hasattr(master_obj, "BoundaryObject") and master_obj.BoundaryObject:
-             temp_bound = self.doc.copyObject(master_obj.BoundaryObject)
-             temp_container.addObject(temp_bound)
-             temp_master_obj.BoundaryObject = temp_bound
-             if hasattr(temp_bound, "ViewObject"): temp_bound.ViewObject.Visibility = False
+            temp_bound = self.doc.addObject("Part::Feature", f"temp_boundary_{original_label}")
+            temp_bound.Shape = master_obj.BoundaryObject.Shape.copy()
+            temp_container.addObject(temp_bound)
+            
+            # Add the BoundaryObject property if it doesn't exist
+            if not hasattr(temp_master_obj, "BoundaryObject"):
+                temp_master_obj.addProperty("App::PropertyLink", "BoundaryObject", "Nesting", "Boundary object")
+            temp_master_obj.BoundaryObject = temp_bound
+            
+            if hasattr(temp_bound, "ViewObject"): 
+                temp_bound.ViewObject.Visibility = False
         
-        if hasattr(temp_master_obj, "ViewObject"): temp_master_obj.ViewObject.Visibility = False
-        if hasattr(temp_container, "ViewObject"): temp_container.ViewObject.Visibility = False
+        if hasattr(temp_master_obj, "ViewObject"): 
+            temp_master_obj.ViewObject.Visibility = False
+        if hasattr(temp_container, "ViewObject"): 
+            temp_container.ViewObject.Visibility = False
 
-        # 3. Update Quantity
+        # 3. Copy Quantity property
         quantity, _ = quantities.get(original_label, (1, 1))
         temp_container.addProperty("App::PropertyInteger", "Quantity", "Nest", "Number of instances").Quantity = quantity
 
-        # We are reloading an existing Master Shape (master_shape_X)
-        # It should already have a BoundaryObject and correct Placement.
-        
-        # FreeCAD.Console.PrintMessage(f"DEBUG: Reloading '{label}'. Checking for boundary/reuse...\n")
-        
-        # Check if we can reuse the existing boundary/properties
-        # We need the boundary to match the current spacing settings.
-        # We can store/retrieve the 'Spacing' property from the Master Object if we saved it?
-        # Implementing a check based on property
-        
-        cached_spacing = -1
-        try:
-             # Check if we saved metadata on the object? 
-             # Or just infer from name/logic?
-             # For now, we trust the boundary if it exists and looks valid? 
-             # Ideally we should save 'Spacing' property on master.
-             pass
-        except: pass
-        
-        # 1. Reuse Logic
-        # If we have a boundary, and assume spacing hasn't drastically changed (weak check)
+        # 4. Build Shape wrapper - reuse boundary geometry from the original
         if hasattr(temp_master_obj, "BoundaryObject") and temp_master_obj.BoundaryObject:
-             try:
-                 from shapely.geometry import Polygon
-                 bound_shape = temp_master_obj.BoundaryObject.Shape
-                 
-                 # Reconstruct Polygon from Boundary wires
-                 wires = bound_shape.Wires
-                 wires.sort(key=lambda w: w.Length, reverse=True)
-                 
-                 if wires:
-                     outer_pts = [(v.x, v.y) for v in wires[0].discretize(Deflection=0.01)]
-                     if outer_pts:
-                         if outer_pts[0] != outer_pts[-1]: outer_pts.append(outer_pts[0])
-                         poly = Polygon(outer_pts)
-                         holes = []
-                         for w in wires[1:]:
-                             h_pts = [(v.x, v.y) for v in w.discretize(Deflection=0.01)]
-                             if h_pts[0] != h_pts[-1]: h_pts.append(h_pts[0])
-                             if len(h_pts) > 2: holes.append(h_pts)
-                         
-                         final_poly = Polygon(poly.exterior.coords, holes)
-                         
-                         temp_shape_wrapper = Shape(temp_master_obj)
-                         temp_shape_wrapper.polygon = final_poly
-                         
-                         # CRITICAL: Recover centroid from Placement, or Recalculate?
-                         # master_shape_X was placed at (-Centroid).
-                         # So Centroid = Placement.Base.negative()
-                         temp_shape_wrapper.source_centroid = temp_master_obj.Placement.Base.negative()
-                         
-                         FreeCAD.Console.PrintMessage(f"SHAPE_PROC: Reload '{label}': Centroid from Placement: {temp_shape_wrapper.source_centroid}\n")
-                         
-                         self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
-             except Exception as e:
-                 FreeCAD.Console.PrintWarning(f"SHAPE_PROC: Reuse failed for '{label}': {e}. Recalculating.\n")
-                 temp_shape_wrapper = None
+            try:
+                from shapely.geometry import Polygon
+                bound_shape = temp_master_obj.BoundaryObject.Shape
+                
+                wires = bound_shape.Wires
+                wires.sort(key=lambda w: w.Length, reverse=True)
+                
+                if wires:
+                    outer_pts = [(v.x, v.y) for v in wires[0].discretize(Deflection=0.01)]
+                    if outer_pts:
+                        if outer_pts[0] != outer_pts[-1]: 
+                            outer_pts.append(outer_pts[0])
+                        poly = Polygon(outer_pts)
+                        holes = []
+                        for w in wires[1:]:
+                            h_pts = [(v.x, v.y) for v in w.discretize(Deflection=0.01)]
+                            if h_pts[0] != h_pts[-1]: 
+                                h_pts.append(h_pts[0])
+                            if len(h_pts) > 2: 
+                                holes.append(h_pts)
+                        
+                        final_poly = Polygon(poly.exterior.coords, holes)
+                        
+                        temp_shape_wrapper = Shape(temp_master_obj)
+                        temp_shape_wrapper.polygon = final_poly
+                        temp_shape_wrapper.source_centroid = temp_master_obj.Placement.Base.negative()
+                        
+                        FreeCAD.Console.PrintMessage(f"SHAPE_PROC: Reload '{label}': Centroid from Placement: {temp_shape_wrapper.source_centroid}\n")
+                        
+                        self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"SHAPE_PROC: Reuse failed for '{label}': {e}. Recalculating.\n")
+                temp_shape_wrapper = None
         
-        # 2. Recalculate Logic (If Reuse Failed or New)
+        # 5. Recalculate if reuse failed
         if not temp_shape_wrapper:
-             temp_shape_wrapper = Shape(temp_master_obj)
-             # This calculates source_centroid from the LOCAL geometry (at C)
-             shape_processor.create_single_nesting_part(temp_shape_wrapper, temp_master_obj, spacing, boundary_resolution)
-             self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
-             
-             FreeCAD.Console.PrintMessage(f"SHAPE_PROC: Reload '{label}': Recalculated Centroid: {temp_shape_wrapper.source_centroid}\n")
-             
-             # Note: We do NOT update temp_master_obj.Placement here. 
-             # If geometry (C) hasn't moved, the old Placement (-C) is still valid.
-             # If C changed (e.g. geometry modified), we imply a drift unless we update Placement?
-             # For Master Shapes, we assume geometry is static.
+            temp_shape_wrapper = Shape(temp_master_obj)
+            shape_processor.create_single_nesting_part(temp_shape_wrapper, temp_master_obj, spacing, boundary_resolution)
+            self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
+            
+            FreeCAD.Console.PrintMessage(f"SHAPE_PROC: Reload '{label}': Recalculated Centroid: {temp_shape_wrapper.source_centroid}\n")
 
         return temp_master_obj, temp_shape_wrapper
 
@@ -256,7 +248,10 @@ class ShapePreparer:
         
         for container, shape_wrapper in masters_to_place:
             container.Placement = FreeCAD.Placement(FreeCAD.Vector(current_x, y_offset, 0), FreeCAD.Rotation())
-            current_x += container.Shape.BoundBox.XLength + spacing * 2
+            # Use shape_wrapper bounds, not container.Shape (App::Part has no Shape)
+            bounds = shape_wrapper.bounding_box()
+            width = bounds[2] - bounds[0] if bounds else 100
+            current_x += width + spacing * 2
 
     def _create_nesting_instances(self, master_shapes_map, quantities, master_shape_obj_map, master_geometry_cache, ui_settings, parts_group):
         parts_to_nest = []
@@ -295,21 +290,24 @@ class ShapePreparer:
                 shape_instance.id = f"{lookup_label}_{shape_instance.instance_num}"
                 shape_instance.rotation_steps = part_rotation_steps
 
-                # Create temp copy
-                part_copy = self.doc.copyObject(master_shape_obj, True)
-                # Recalculate label to be unique but traceable
-                part_copy.Label = f"part_{shape_instance.id}"
+                # Create temp copy using addObject (NOT copyObject to avoid link corruption)
+                part_copy = self.doc.addObject("Part::Feature", f"part_{shape_instance.id}")
+                part_copy.Shape = master_shape_obj.Shape.copy()
+                part_copy.Placement = master_shape_obj.Placement
+                
+                # Copy boundary if exists
+                if hasattr(master_shape_obj, "BoundaryObject") and master_shape_obj.BoundaryObject:
+                    boundary_copy = self.doc.addObject("Part::Feature", f"boundary_{shape_instance.id}")
+                    boundary_copy.Shape = master_shape_obj.BoundaryObject.Shape.copy()
+                    part_copy.addProperty("App::PropertyLink", "BoundaryObject", "Nesting", "Boundary object")
+                    part_copy.BoundaryObject = boundary_copy
+                    parts_to_place_group.addObject(boundary_copy)
                 
                 parts_to_place_group.addObject(part_copy)
                 shape_instance.fc_object = part_copy
                 
                 # Do NOT manipulate Placement here. 
                 # The Sheet.draw method is the sole authority on where this part ends up.
-                # Setting it here to 'GlobalPlacement' of master creates confusion and visual artifacts components in PartsToPlace.
-                # part_copy.Placement = ... (Removed)
-
-                part_copy.ShowBounds = True
-                part_copy.ShowShape = False
 
                 if add_labels and Draft and font_path:
                     shape_instance.label_text = shape_instance.id

@@ -234,7 +234,10 @@ class Sheet:
                         container.addObject(boundary_obj)
                         
                         if hasattr(boundary_obj, "ViewObject"):
-                             boundary_obj.ViewObject.Visibility = container.ShowBounds
+                            boundary_obj.ViewObject.Visibility = container.ShowBounds
+                            # Set red color for bounds
+                            boundary_obj.ViewObject.LineColor = (1.0, 0.0, 0.0)  # Red
+                            boundary_obj.ViewObject.LineWidth = 2.0
 
                     # Place the shape object inside the container, offsetting it by -source_centroid
                     # to align it with the boundary object.
@@ -298,9 +301,19 @@ class Sheet:
                         
                         label_obj.Placement = FreeCAD.Placement(label_placement_base, inverse_rotation)
                         
+                        # Link label to shape (add property if needed for plain Part::Feature)
+                        if not hasattr(shape_obj, "LabelObject"):
+                            shape_obj.addProperty("App::PropertyLink", "LabelObject", "Nesting", "Link to label")
                         shape_obj.LabelObject = label_obj
 
-                    # Set visibility on the main shape object
+                    # Set visibility on the main shape object (add properties if needed)
+                    if not hasattr(shape_obj, "ShowShape"):
+                        shape_obj.addProperty("App::PropertyBool", "ShowShape", "Nesting", "Show shape geometry")
+                    if not hasattr(shape_obj, "ShowBounds"):
+                        shape_obj.addProperty("App::PropertyBool", "ShowBounds", "Nesting", "Show bounds")
+                    if not hasattr(shape_obj, "ShowLabel"):
+                        shape_obj.addProperty("App::PropertyBool", "ShowLabel", "Nesting", "Show label")
+                    
                     shape_obj.ShowShape = True
                     shape_obj.ShowBounds = ui_params.get('show_bounds', False)
                     shape_obj.ShowLabel = ui_params.get('add_labels', False)
