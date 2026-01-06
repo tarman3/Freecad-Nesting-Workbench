@@ -50,9 +50,15 @@ class PlacementOptimizer:
 
         best_result = {'metric': float('inf')}
         
+        # Use per-part rotation_steps if available, otherwise use global
+        part_rotation_steps = getattr(part, 'rotation_steps', None)
+        if part_rotation_steps is None or part_rotation_steps < 1:
+            part_rotation_steps = self.rotation_steps
+        part_rotation_steps = max(1, part_rotation_steps)
+        
         # Parallel execution
         with ThreadPoolExecutor() as executor:
-            angles = [i * (360.0 / self.rotation_steps) for i in range(self.rotation_steps)]
+            angles = [i * (360.0 / part_rotation_steps) for i in range(part_rotation_steps)]
             futures = {
                 executor.submit(self._evaluate_rotation, angle, part, placed_parts_grouped, sheet, direction): angle 
                 for angle in angles

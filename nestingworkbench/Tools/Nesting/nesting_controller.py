@@ -423,7 +423,6 @@ class NestingController:
 
     def _collect_job_parameters(self, ui_settings):
         # Re-implementation of collecting quantities and master map from UI table
-        # Simplified for brevity - assumes standard UI state
         quantities = {}
         master_map = {}
         rotation_params = {}
@@ -439,7 +438,11 @@ class NestingController:
                 rot_val = rot_widget.findChild(QtGui.QSpinBox).value()
                 override = self.ui.shape_table.cellWidget(row, 3).isChecked()
                 
+                # Store quantity with effective rotation (based on override)
                 quantities[label] = (qty, rot_val if override else global_rot)
+                
+                # Store rotation params (value AND override flag) for persistence
+                rotation_params[label] = (rot_val, override)
             except: continue
             
         # Map objects
