@@ -280,8 +280,6 @@ class ShapePreparer:
         current_x = 0
         y_offset = -max_master_height - spacing * 4 
         
-        FreeCAD.Console.PrintMessage(f"Arranging {len(masters_to_place)} master shapes at y_offset={y_offset:.1f}\n")
-        
         for container, shape_wrapper in masters_to_place:
             # Since child shapes are centered at container origin (with -source_centroid placement),
             # the container placement should just be the target position directly
@@ -291,8 +289,6 @@ class ShapePreparer:
             # bounds is (min_x, min_y, width, height) of the Shapely polygon (centered at 0,0)
             bounds = shape_wrapper.bounding_box()
             width = bounds[2] if bounds else 100
-            
-            FreeCAD.Console.PrintMessage(f"  -> Master '{container.Label}': pos=({current_x:.1f}, {y_offset:.1f})\n")
             current_x += width + spacing * 2
 
     def _create_nesting_instances(self, master_shapes_map, quantities, master_shape_obj_map, master_geometry_cache, ui_settings, parts_group):

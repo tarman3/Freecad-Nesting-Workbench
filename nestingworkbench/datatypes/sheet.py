@@ -204,11 +204,6 @@ class Sheet:
         if shape:
             # For final drawing, placement is pre-calculated. For simulation, we calculate it now.
             final_placement = shape.placement if shape.placement else shape.get_final_placement(sheet_origin)
-            
-            # Debug: trace placement calculation
-            if shape.polygon:
-                nested_centroid = shape.polygon.centroid
-                FreeCAD.Console.PrintMessage(f"Placement '{shape.id}': nested_centroid=({nested_centroid.x:.1f}, {nested_centroid.y:.1f}), container_pos={final_placement.Base}\n")
 
             shape_obj = shape.fc_object
             if shape_obj:
