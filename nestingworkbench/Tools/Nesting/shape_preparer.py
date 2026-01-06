@@ -184,11 +184,9 @@ class ShapePreparer:
                         temp_shape_wrapper.polygon = final_poly
                         temp_shape_wrapper.source_centroid = temp_master_obj.Placement.Base.negative()
                         
-                        FreeCAD.Console.PrintMessage(f"SHAPE_PROC: Reload '{label}': Centroid from Placement: {temp_shape_wrapper.source_centroid}\n")
-                        
                         self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
             except Exception as e:
-                FreeCAD.Console.PrintWarning(f"SHAPE_PROC: Reuse failed for '{label}': {e}. Recalculating.\n")
+                FreeCAD.Console.PrintWarning(f"Shape reload failed for '{label}': {e}. Recalculating.\n")
                 temp_shape_wrapper = None
         
         # 5. Recalculate if reuse failed
@@ -196,8 +194,6 @@ class ShapePreparer:
             temp_shape_wrapper = Shape(temp_master_obj)
             shape_processor.create_single_nesting_part(temp_shape_wrapper, temp_master_obj, spacing, boundary_resolution)
             self.processed_shape_cache[cache_key] = copy.deepcopy(temp_shape_wrapper)
-            
-            FreeCAD.Console.PrintMessage(f"SHAPE_PROC: Reload '{label}': Recalculated Centroid: {temp_shape_wrapper.source_centroid}\n")
 
         return temp_master_obj, temp_shape_wrapper
 

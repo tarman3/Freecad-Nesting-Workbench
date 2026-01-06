@@ -85,8 +85,9 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution
     from ..nesting_logic import SHAPELY_AVAILABLE
     if not SHAPELY_AVAILABLE:
         raise ImportError("The shapely library is required for boundary creation but is not installed.")
-        
-    FreeCAD.Console.PrintMessage(f"SHAPE_PROC: Processing '{shape_obj.Label}' with spacing {spacing}...\n")
+    
+    FreeCAD.Console.PrintMessage(f"Processing shape '{shape_obj.Label}'...\n")
+    
     from shapely.geometry import Polygon, MultiPolygon
     from shapely.affinity import translate
     from shapely.validation import make_valid
@@ -157,8 +158,6 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution
 
     if buffered_polygon.is_empty:
          raise ValueError("Buffering operation did not produce a valid polygon.")
-    else:
-        FreeCAD.Console.PrintMessage(f"SHAPE_PROC:  -> Successfully created buffered polygon. Area: {buffered_polygon.area:.2f}\n")
 
     # --- Post-processing to perfectly center all polygons at the origin ---
     # The buffering operation can shift the centroid of the resulting polygon.

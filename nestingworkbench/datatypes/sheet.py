@@ -192,7 +192,6 @@ class Sheet:
                 sheet_obj.ViewObject.Transparency = 75
 
             # Draw the parts placed on this sheet
-            FreeCAD.Console.PrintMessage(f"DEBUG: --- Drawing Sheet {self.id+1} --- \n")
             for placed_part in self.parts:
                 self._draw_single_part(doc, placed_part.shape, sheet_origin, ui_params, shapes_group, parts_to_place_group)
 
@@ -261,14 +260,10 @@ class Sheet:
                             parts_to_place_group.removeObject(shape_obj)
                         except Exception:
                             pass
-                            
-                    FreeCAD.Console.PrintMessage(f"DEBUG_SHEET: Part '{shape.id}': Source Centroid={shape.source_centroid}, Final Placement={final_placement}\n")
 
                     # Apply the final nesting placement to the CONTAINER.
                     container.Placement = final_placement
-                    # FreeCAD.Console.PrintMessage(f"DEBUG: PLACEMENT for '{container.Label}': {container.Placement}")
 
-                    # --- Handle the label object AFTER the container is placed ---
                     # --- Handle the label object AFTER the container is placed ---
                     if ui_params.get('add_labels', False) and Draft and ui_params.get('font_path') and hasattr(shape, 'label_text') and shape.label_text:
                         label_name = f"label_{shape.id}"

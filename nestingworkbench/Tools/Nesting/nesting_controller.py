@@ -42,13 +42,12 @@ class NestingJob:
         if hasattr(self.temp_layout, "ViewObject"):
             self.temp_layout.ViewObject.Visibility = True
             
-        FreeCAD.Console.PrintMessage(f"DEBUG: Initialized sandbox: {self.temp_layout.Name}\n")
+
 
     def run(self, quantities, master_map, rotation_params, algo_kwargs, is_simulating=False):
         """Executes the nesting logic: Prepare -> Nest -> Draw."""
         
         # 1. Prepare Shapes
-        FreeCAD.Console.PrintMessage("DEBUG: Preparing shapes...\n")
         parts_to_nest = self.preparer.prepare_parts(
             self.params, quantities, master_map, self.temp_layout, self.parts_group
         )
@@ -60,7 +59,6 @@ class NestingJob:
         self._persist_metadata(quantities, rotation_params)
 
         # 2. Run Algorithm
-        FreeCAD.Console.PrintMessage("DEBUG: Running algorithm...\n")
         self.sheets, unplaced, steps = nest(
             parts_to_nest, 
             self.params['sheet_width'], 
@@ -75,7 +73,6 @@ class NestingJob:
             
         # 3. Draw Results (into Temp Layout)
         # Note: sheet.draw now handles unlinking from PartsToPlace!
-        FreeCAD.Console.PrintMessage("DEBUG: Drawing results...\n")
         for sheet in self.sheets:
             sheet.draw(self.doc, self.params, self.temp_layout, parts_to_place_group=self.parts_group)
             
@@ -117,7 +114,6 @@ class NestingJob:
 
     def commit(self):
         """Promotes the temporary results to the target layout."""
-        FreeCAD.Console.PrintMessage(f"DEBUG: Committing to target {self.target_layout.Label}...\n")
         
         # 1. Clean Target of old results (Sheets)
         # We do NOT remove MasterShapes unless we have new ones to replace them?
@@ -167,7 +163,6 @@ class NestingJob:
 
     def cleanup(self):
         """Destroys the sandbox."""
-        FreeCAD.Console.PrintMessage("DEBUG: Cleaning up sandbox...\n")
         if self.temp_layout:
             self._recursive_delete(self.temp_layout)
             self.temp_layout = None
@@ -347,35 +342,42 @@ class NestingController:
 
     def toggle_bounds_visibility(self):
         is_visible = self.ui.show_bounds_checkbox.isChecked()
-        current_layout = getattr(self.ui, 'current_layout', None)
         
-        if not current_layout: 
-            FreeCAD.Console.PrintWarning("Toggle bounds: No current_layout set.\n")
+        # If a job is active, use its temp_layout (where current results are)
+        # Otherwise use the committed current_layout
+        if self.current_job and self.current_job.temp_layout:
+            target_layout = self.current_job.temp_layout
+        else:
+            target_layout = getattr(self.ui, 'current_layout', None)
+        
+        if not target_layout: 
             return
-
-        FreeCAD.Console.PrintMessage(f"Toggle bounds: Setting visibility to {is_visible} on layout '{current_layout.Label}'\n")
+        
+        found_count = 0
         
         # Recursively find and toggle bounds visibility
-        def set_show_bounds(obj):
-            # Set ShowBounds property if exists
-            if hasattr(obj, "ShowBounds"):
-                obj.ShowBounds = is_visible
-                
-            # Toggle BoundaryObject visibility if linked
+        def set_show_bounds(obj, depth=0):
+            nonlocal found_count
+            indent = "  " * depth
+            
+            # Check for boundary objects that are children (by label)
+            if obj.Label.startswith("boundary_"):
+                found_count += 1
+                if hasattr(obj, "ViewObject"):
+                    obj.ViewObject.Visibility = is_visible
+                    
+            # Check for linked BoundaryObject property
             if hasattr(obj, "BoundaryObject") and obj.BoundaryObject:
+                found_count += 1
                 if hasattr(obj.BoundaryObject, "ViewObject"):
                     obj.BoundaryObject.ViewObject.Visibility = is_visible
-                    
-            # Also check if this object IS a boundary (by label pattern)
-            if obj.Label.startswith("boundary_") and hasattr(obj, "ViewObject"):
-                obj.ViewObject.Visibility = is_visible
                 
             # Recurse into children
             if hasattr(obj, "Group"):
                 for child in obj.Group:
-                    set_show_bounds(child)
+                    set_show_bounds(child, depth + 1)
                     
-        set_show_bounds(current_layout)
+        set_show_bounds(target_layout)
         self.doc.recompute()
 
     def _ensure_target_layout(self):
@@ -403,7 +405,6 @@ class NestingController:
             target = self.doc.addObject("App::DocumentObjectGroup", f"{base_name}_{i:03d}")
             target.Label = f"{base_name}_{i:03d}"
             self.ui.current_layout = target
-            FreeCAD.Console.PrintMessage(f"DEBUG: Created default layout: {target.Label}\n")
             
         return target
 
