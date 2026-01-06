@@ -186,7 +186,37 @@ def nest(parts, width, height, rotation_steps=1, simulate=False, **kwargs):
     else:
         sheets, unplaced = result
 
+    # Calculate and display packing efficiency
+    _calculate_efficiency(sheets)
+
     return sheets, unplaced, steps
+
+def _calculate_efficiency(sheets):
+    """Calculates and displays sheet packing efficiency."""
+    if not sheets:
+        return
+    
+    total_parts_area = 0
+    total_sheet_area = 0
+    
+    FreeCAD.Console.PrintMessage("\n--- PACKING EFFICIENCY ---\n")
+    
+    for i, sheet in enumerate(sheets):
+        sheet_area = sheet.width * sheet.height
+        parts_area = sum(part.shape.area for part in sheet.parts if hasattr(part, 'shape') and part.shape)
+        
+        total_sheet_area += sheet_area
+        total_parts_area += parts_area
+        
+        if sheet_area > 0:
+            efficiency = (parts_area / sheet_area) * 100
+            FreeCAD.Console.PrintMessage(f"  Sheet {i+1}: {efficiency:.1f}% ({parts_area:.0f} / {sheet_area:.0f} mm²)\n")
+    
+    if total_sheet_area > 0:
+        overall_efficiency = (total_parts_area / total_sheet_area) * 100
+        FreeCAD.Console.PrintMessage(f"  Overall: {overall_efficiency:.1f}% ({total_parts_area:.0f} / {total_sheet_area:.0f} mm²)\n")
+    
+    FreeCAD.Console.PrintMessage("--------------------------\n")
 
 def show_shapely_installation_instructions():
     msg_box = QtGui.QMessageBox()
