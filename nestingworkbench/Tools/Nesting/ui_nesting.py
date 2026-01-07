@@ -59,8 +59,8 @@ class NestingPanel(QtGui.QWidget):
         self.boundary_resolution_input.setToolTip("Number of points per curve for boundary creation. Higher values are more accurate but slower.")
         
         self.shape_table = QtGui.QTableWidget()
-        self.shape_table.setColumnCount(4)
-        self.shape_table.setHorizontalHeaderLabels(["Shape", "Quantity", "Rotations", "Enable Override"])
+        self.shape_table.setColumnCount(6)
+        self.shape_table.setHorizontalHeaderLabels(["Shape", "Quantity", "Rotations", "Override", "Up Dir", "Fill"])
 
         # --- Global Rotation Slider ---
         self.rotation_steps_slider = QtGui.QSlider(QtCore.Qt.Horizontal)
@@ -253,6 +253,10 @@ class NestingPanel(QtGui.QWidget):
         if hasattr(layout_group, 'FontFile') and os.path.exists(layout_group.FontFile):
             self.selected_font_path = layout_group.FontFile
             self.font_label.setText(os.path.basename(layout_group.FontFile))
+        if hasattr(layout_group, 'Generations'):
+            self.minkowski_generations_input.setValue(layout_group.Generations)
+        if hasattr(layout_group, 'PopulationSize'):
+            self.minkowski_population_size_input.setValue(layout_group.PopulationSize)
 
         # Get the shapes from the layout
         master_shapes_group = None
@@ -272,6 +276,8 @@ class NestingPanel(QtGui.QWidget):
             quantities = {}
             rotation_overrides = {}
             rotation_steps_map = {}
+            up_directions = {}
+            fill_sheet_map = {}
             
             for master_container in master_shapes_group.Group:
                 FreeCAD.Console.PrintMessage(f"    Checking container: {master_container.Label}\n")
@@ -296,6 +302,10 @@ class NestingPanel(QtGui.QWidget):
                             rotation_overrides[shape_obj.Label] = master_container.PartRotationOverride
                         if hasattr(master_container, "PartRotationSteps"):
                             rotation_steps_map[shape_obj.Label] = master_container.PartRotationSteps
+                        if hasattr(master_container, "UpDirection"):
+                            up_directions[shape_obj.Label] = master_container.UpDirection
+                        if hasattr(master_container, "FillSheet"):
+                            fill_sheet_map[shape_obj.Label] = master_container.FillSheet
                     else:
                         FreeCAD.Console.PrintMessage(f"      No master_shape_ found in container!\n")
                 else:
@@ -308,7 +318,9 @@ class NestingPanel(QtGui.QWidget):
                 is_reloading_layout=True, 
                 initial_quantities=quantities,
                 initial_overrides=rotation_overrides,
-                initial_rotation_steps=rotation_steps_map
+                initial_rotation_steps=rotation_steps_map,
+                initial_up_directions=up_directions,
+                initial_fill_sheet=fill_sheet_map
             )
             
             # Load Global Rotation Steps if present
@@ -318,9 +330,71 @@ class NestingPanel(QtGui.QWidget):
             FreeCAD.Console.PrintMessage(f"  WARNING: No MasterShapes group found!\n")
             self.status_label.setText("Warning: Could not find 'MasterShapes' group in the selected layout.")
 
-    def load_shapes(self, selection, is_reloading_layout=False, initial_quantities=None, initial_overrides=None, initial_rotation_steps=None):
+    def _extract_parts_from_selection(self, selection):
+        """
+        Extracts parts from Assembly containers only.
+        Regular Part objects are used directly without extracting children.
+        """
+        parts = []
+        
+        def is_assembly(obj):
+            """Check if object is an Assembly container (not a regular Part/Body)."""
+            # Check for common assembly types
+            type_id = obj.TypeId if hasattr(obj, 'TypeId') else ''
+            if 'Assembly' in type_id:
+                return True
+            # Also check for App::Part that's used as an assembly (has Link children)
+            if type_id == 'App::Part' and hasattr(obj, 'Group'):
+                # If it contains links or other assembly-like parts, treat as assembly
+                for child in obj.Group:
+                    child_type = child.TypeId if hasattr(child, 'TypeId') else ''
+                    if 'Link' in child_type or 'Assembly' in child_type:
+                        return True
+            return False
+        
+        def extract_from_assembly(obj):
+            """Recursively extract nestable parts from an assembly."""
+            if hasattr(obj, 'Group'):
+                for child in obj.Group:
+                    # Skip constraints, origins, etc.
+                    child_type = child.TypeId if hasattr(child, 'TypeId') else ''
+                    if 'Constraint' in child_type or 'Origin' in child_type:
+                        continue
+                    # If child is a link, get the linked object
+                    if hasattr(child, 'LinkedObject') and child.LinkedObject:
+                        linked = child.LinkedObject
+                        if hasattr(linked, 'Shape') and linked.Shape and not linked.Shape.isNull():
+                            parts.append(linked)
+                    elif hasattr(child, 'Shape') and child.Shape and not child.Shape.isNull():
+                        # Check if child is also an assembly
+                        if is_assembly(child):
+                            extract_from_assembly(child)
+                        else:
+                            parts.append(child)
+        
+        for obj in selection:
+            if is_assembly(obj):
+                # Extract parts from assembly
+                extract_from_assembly(obj)
+            else:
+                # Use regular part directly
+                parts.append(obj)
+        
+        return parts
+
+    def load_shapes(self, selection, is_reloading_layout=False, initial_quantities=None, 
+                     initial_overrides=None, initial_rotation_steps=None,
+                     initial_up_directions=None, initial_fill_sheet=None):
         """Loads a selection of shapes into the UI."""
         self.nest_button.setEnabled(True)
+        
+        # Extract individual parts from assemblies/groups
+        if not is_reloading_layout:
+            extracted = self._extract_parts_from_selection(selection)
+            if extracted:
+                selection = extracted
+                FreeCAD.Console.PrintMessage(f"  -> Extracted {len(selection)} parts from selection.\n")
+        
         self.selected_shapes_to_process = list(dict.fromkeys(selection)) # Keep unique, preserve order
         if not is_reloading_layout:
             self.current_layout = None
@@ -343,8 +417,17 @@ class NestingPanel(QtGui.QWidget):
                 steps = initial_rotation_steps[obj.Label]
             if initial_overrides and obj.Label in initial_overrides:
                 override = initial_overrides[obj.Label]
+            
+            up_dir = "Z+"
+            if initial_up_directions and obj.Label in initial_up_directions:
+                up_dir = initial_up_directions[obj.Label]
+                
+            fill = False
+            if initial_fill_sheet and obj.Label in initial_fill_sheet:
+                fill = initial_fill_sheet[obj.Label]
 
-            self._add_part_row(i, display_label, quantity=qty, rotation_steps=steps, override_rotation=override)
+            self._add_part_row(i, display_label, quantity=qty, rotation_steps=steps, 
+                              override_rotation=override, up_direction=up_dir, fill_sheet=fill)
         
         self.shape_table.resizeColumnsToContents()
         self.status_label.setText(f"{len(selection)} unique object(s) selected. Specify quantities and nest.")
@@ -370,7 +453,8 @@ class NestingPanel(QtGui.QWidget):
         self.shape_table.resizeColumnsToContents()
         self.status_label.setText(f"Added {added_count} new shape(s).")
 
-    def _add_part_row(self, row_index, label, quantity=1, rotation_steps=4, override_rotation=False):
+    def _add_part_row(self, row_index, label, quantity=1, rotation_steps=4, override_rotation=False, 
+                       up_direction="Z+", fill_sheet=False):
         """Helper function to create and populate a single row in the parts table."""
         label_item = QtGui.QTableWidgetItem(label)
         label_item.setFlags(label_item.flags() & ~QtCore.Qt.ItemIsEditable)
@@ -404,10 +488,23 @@ class NestingPanel(QtGui.QWidget):
         override_checkbox.stateChanged.connect(rotation_widget.setEnabled)
         rotation_widget.setEnabled(override_rotation) # Disabled by default unless overridden
 
+        # --- Up Direction Combo ---
+        up_dir_combo = QtGui.QComboBox()
+        up_dir_combo.addItems(["Z+", "Z-", "Y+", "Y-", "X+", "X-"])
+        up_dir_combo.setCurrentText(up_direction)
+        up_dir_combo.setToolTip("Define which direction is 'up' for this part when projecting to 2D.")
+
+        # --- Fill Sheet Checkbox ---
+        fill_checkbox = QtGui.QCheckBox()
+        fill_checkbox.setChecked(fill_sheet)
+        fill_checkbox.setToolTip("If checked, this part will be used to fill remaining space after all other parts are placed.")
+
         self.shape_table.setItem(row_index, 0, label_item)
         self.shape_table.setCellWidget(row_index, 1, quantity_spinbox)
         self.shape_table.setCellWidget(row_index, 2, rotation_widget)
         self.shape_table.setCellWidget(row_index, 3, override_checkbox)
+        self.shape_table.setCellWidget(row_index, 4, up_dir_combo)
+        self.shape_table.setCellWidget(row_index, 5, fill_checkbox)
 
     def remove_selected_shapes(self):
         """Removes the selected rows from the shape table."""

@@ -229,9 +229,22 @@ class ShapePreparer:
 
         master_container = self.doc.addObject("App::Part", f"master_{label}")
         
-        # Store quantity
-        quantity, _ = quantities.get(label, (1, 1))
+        # Get part parameters from quantities dict (now a dict of dicts)
+        part_params = quantities.get(label, {'quantity': 1, 'rotation_steps': 1, 'up_direction': 'Z+', 'fill_sheet': False})
+        if isinstance(part_params, tuple):
+            # Legacy format: (quantity, rotation_steps)
+            quantity = part_params[0]
+            up_direction = 'Z+'
+            fill_sheet = False
+        else:
+            quantity = part_params.get('quantity', 1)
+            up_direction = part_params.get('up_direction', 'Z+')
+            fill_sheet = part_params.get('fill_sheet', False)
+        
+        # Store properties
         master_container.addProperty("App::PropertyInteger", "Quantity", "Nest", "Number of instances").Quantity = quantity
+        master_container.addProperty("App::PropertyString", "UpDirection", "Nest", "Up direction for 2D projection").UpDirection = up_direction
+        master_container.addProperty("App::PropertyBool", "FillSheet", "Nest", "Use to fill remaining space").FillSheet = fill_sheet
 
         # *** CLEAN OFFSET DESIGN ***
         # Store the source_centroid as a property on the container - this is THE source of truth
@@ -307,7 +320,17 @@ class ShapePreparer:
             if label.startswith("master_shape_"):
                  lookup_label = label.replace("master_shape_", "")
             
-            quantity, part_rotation_steps = quantities.get(lookup_label, (0, global_rotation_steps))
+            # Handle new dict format and legacy tuple format
+            part_params = quantities.get(lookup_label, {'quantity': 0, 'rotation_steps': global_rotation_steps})
+            if isinstance(part_params, tuple):
+                # Legacy format
+                quantity = part_params[0]
+                part_rotation_steps = part_params[1]
+                fill_sheet = False
+            else:
+                quantity = part_params.get('quantity', 0)
+                part_rotation_steps = part_params.get('rotation_steps', global_rotation_steps)
+                fill_sheet = part_params.get('fill_sheet', False)
             
             master_shape_obj = master_shape_obj_map.get(id(original_obj))
             master_wrapper = master_geometry_cache.get(id(original_obj))
@@ -327,6 +350,7 @@ class ShapePreparer:
                 shape_instance.instance_num = i + 1
                 shape_instance.id = f"{lookup_label}_{shape_instance.instance_num}"
                 shape_instance.rotation_steps = part_rotation_steps
+                shape_instance.fill_sheet = fill_sheet  # Store fill_sheet flag on shape
 
                 # Create temp copy using addObject (NOT copyObject to avoid link corruption)
                 part_copy = self.doc.addObject("Part::Feature", f"part_{shape_instance.id}")

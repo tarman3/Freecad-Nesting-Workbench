@@ -231,6 +231,8 @@ class NestingJob:
         self._set_prop(layout_obj, "App::PropertyBool", "AddLabels", p['add_labels'])
         self._set_prop(layout_obj, "App::PropertyLength", "LabelHeight", p['label_height'])
         self._set_prop(layout_obj, "App::PropertyInteger", "GlobalRotationSteps", p['rotation_steps'])
+        self._set_prop(layout_obj, "App::PropertyInteger", "Generations", p.get('generations', 1))
+        self._set_prop(layout_obj, "App::PropertyInteger", "PopulationSize", p.get('population_size', 1))
 
     def _set_prop(self, obj, type_str, name, val):
         if not hasattr(obj, name):
@@ -616,7 +618,9 @@ class NestingController:
             'add_labels': self.ui.add_labels_checkbox.isChecked(),
             'font_path': getattr(self.ui, 'selected_font_path', None),
             'show_bounds': self.ui.show_bounds_checkbox.isChecked(),
-            'label_height': self.ui.label_height_input.value()
+            'label_height': self.ui.label_height_input.value(),
+            'generations': self.ui.minkowski_generations_input.value(),
+            'population_size': self.ui.minkowski_population_size_input.value()
         }
 
     def _collect_job_parameters(self, ui_settings):
@@ -636,8 +640,20 @@ class NestingController:
                 rot_val = rot_widget.findChild(QtGui.QSpinBox).value()
                 override = self.ui.shape_table.cellWidget(row, 3).isChecked()
                 
-                # Store quantity with effective rotation (based on override)
-                quantities[label] = (qty, rot_val if override else global_rot)
+                # Get new parameters
+                up_dir_combo = self.ui.shape_table.cellWidget(row, 4)
+                up_direction = up_dir_combo.currentText() if up_dir_combo else "Z+"
+                
+                fill_checkbox = self.ui.shape_table.cellWidget(row, 5)
+                fill_sheet = fill_checkbox.isChecked() if fill_checkbox else False
+                
+                # Store quantity with effective rotation (based on override) and new params
+                quantities[label] = {
+                    'quantity': qty,
+                    'rotation_steps': rot_val if override else global_rot,
+                    'up_direction': up_direction,
+                    'fill_sheet': fill_sheet
+                }
                 
                 # Store rotation params (value AND override flag) for persistence
                 rotation_params[label] = (rot_val, override)
