@@ -314,7 +314,6 @@ class ShapePreparer:
         # This is the world-space BB center (after rotation if applicable)
         if temp_shape_wrapper.source_centroid:
             offset = temp_shape_wrapper.source_centroid.negative()
-            FreeCAD.Console.PrintMessage(f"     [DEBUG] Using source_centroid: {temp_shape_wrapper.source_centroid}\n")
         else:
             bb = original_shape.BoundBox
             offset = FreeCAD.Vector(
@@ -322,7 +321,6 @@ class ShapePreparer:
                 -(bb.YMin + bb.YMax) / 2,
                 -(bb.ZMin + bb.ZMax) / 2
             )
-            FreeCAD.Console.PrintMessage(f"     [DEBUG] Fallback to BoundBox center: {bb}\n")
             
         FreeCAD.Console.PrintMessage(f"     Using offset: ({-offset.x:.2f}, {-offset.y:.2f})\n")
         
@@ -376,42 +374,24 @@ class ShapePreparer:
         y_offset = -max_master_height - spacing * 4 
         
         for container, shape_wrapper in masters_to_place:
-            # bounds is (min_x, min_y, width, height) of the Shapely polygon (centered at 0,0)
+            # bounds is (min_x, min_y, width, height) of the Shapely polygon (centered at 0,0) as returned by bounding_box()
+            # Note: bounding_box() returns (minx, miny, width, height)
             bounds = shape_wrapper.bounding_box()
             width = bounds[2] if bounds else 5
             
-            # Calculate center position so the shape starts at cursor_x
-            # Shape is centered at container origin, so it extends [-width/2, width/2] relative to container
-            # We want Left Edge = cursor_x
-            # So Center = cursor_x + width/2
-            center_x = cursor_x + (width / 2.0)
+            # Fix for Asymmetric Shapes:
+            # The shape geometry is inside the container. 
+            # The container is placed at `container_pos`.
+            # We want the Left Edge of the shape's bounding box to be at `cursor_x`.
+            # The local Left Edge is `bounds[0]` (min_x).
+            # So: container_pos.x + min_x = cursor_x
+            # => container_pos.x = cursor_x - min_x
+            
+            min_x_val = bounds[0] if bounds else (-width/2.0)
+            center_x = cursor_x - min_x_val
             
             container_pos = FreeCAD.Vector(center_x, y_offset, 0)
             container.Placement = FreeCAD.Placement(container_pos, FreeCAD.Rotation())
-            
-            FreeCAD.Console.PrintMessage(f"DEBUG: Part '{container.Label}' Width: {width:.2f}\n")
-            FreeCAD.Console.PrintMessage(f"  -> Placing at Center: {center_x:.2f} (Extents: [{cursor_x:.2f}, {cursor_x + width:.2f}])\n")
-            
-            # --- Visual Debug: Draw Bounding Box ---
-            if bounds:
-                min_x, min_y, w, h = bounds
-                p1 = FreeCAD.Vector(min_x, min_y, 0)
-                p2 = FreeCAD.Vector(min_x + w, min_y, 0)
-                p3 = FreeCAD.Vector(min_x + w, min_y + h, 0)
-                p4 = FreeCAD.Vector(min_x, min_y + h, 0)
-                box_wire = Part.makePolygon([p1, p2, p3, p4, p1])
-                
-                box_obj = self.doc.addObject("Part::Feature", f"bbox_{container.Label}")
-                box_obj.Shape = box_wire
-                box_obj.Label = f"bbox_{container.Label}"
-                
-                # Add to container so it moves with the shape
-                container.addObject(box_obj)
-                
-                if hasattr(box_obj, "ViewObject"):
-                    box_obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0) # Red
-                    box_obj.ViewObject.LineWidth = 2.0
-            # ---------------------------------------
             
             # Move cursor past this shape
             cursor_x += width + spacing
