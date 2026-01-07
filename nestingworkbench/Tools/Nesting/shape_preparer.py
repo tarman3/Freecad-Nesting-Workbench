@@ -302,47 +302,35 @@ class ShapePreparer:
         if not hasattr(master_shape_obj, "BoundaryObject"):
             master_shape_obj.addProperty("App::PropertyLink", "BoundaryObject", "Nesting", "")
         
-        # Rotate the shape geometry if up_direction is not Z+
+        # Use original geometry - Placement will handle centering and rotation
         original_shape = master_obj.Shape.copy()
         FreeCAD.Console.PrintMessage(f"  -> Creating master for '{label}' with up_direction='{up_direction}'\n")
-        FreeCAD.Console.PrintMessage(f"     Original BoundBox: {original_shape.BoundBox}\n")
         
-        if up_direction != "Z+" and up_direction is not None:
-            # Get rotation for this up_direction
-            rotation = _get_up_direction_rotation(up_direction)
-            if rotation:
-                center = original_shape.CenterOfMass
-                FreeCAD.Console.PrintMessage(f"     Applying rotation around center {center}\n")
-                placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), rotation, center)
-                # First rotate around original center
-                rotated_shape = original_shape.transformed(placement.Matrix)
-                # Copy to bake the transformation into actual geometry
-                rotated_shape = rotated_shape.copy()
-                
-                # Now translate so the center is at origin
-                new_center = rotated_shape.CenterOfMass
-                translation = FreeCAD.Vector(-new_center.x, -new_center.y, -new_center.z)
-                rotated_shape.translate(translation)
-                
-                FreeCAD.Console.PrintMessage(f"     Shape rotated and centered! Final BoundBox: {rotated_shape.BoundBox}\n")
-                FreeCAD.Console.PrintMessage(f"     Final CenterOfMass: {rotated_shape.CenterOfMass}\n")
-            else:
-                FreeCAD.Console.PrintWarning(f"     No rotation returned for up_direction='{up_direction}'\n")
-                rotated_shape = original_shape
-        else:
-            rotated_shape = original_shape
+        master_shape_obj.Shape = original_shape
         
-        master_shape_obj.Shape = rotated_shape
+        # Apply offset to center the shape relative to the container's origin
+        # Use the 3D shape's center, not the 2D profile centroid (which is in rotated coordinates)
+        offset = original_shape.CenterOfMass.negative()
         
-        # For Z+ shapes, center at origin using source_centroid offset
-        # For rotated shapes, the geometry is already centered at origin (no placement needed)
-        if up_direction == "Z+" or up_direction is None:
-            if temp_shape_wrapper.source_centroid:
-                offset_centroid = temp_shape_wrapper.source_centroid
-            else:
-                offset_centroid = rotated_shape.CenterOfMass
-            master_shape_obj.Placement = FreeCAD.Placement(offset_centroid.negative(), FreeCAD.Rotation())
-        # else: geometry is already centered, no placement needed
+        # Get up_direction rotation
+        up_rotation = FreeCAD.Rotation()
+        if up_direction == "Z-":
+            up_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), 180)
+        elif up_direction == "Y+":
+            up_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), -90)
+        elif up_direction == "Y-":
+            up_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), 90)
+        elif up_direction == "X+":
+            up_rotation = FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), 90)
+        elif up_direction == "X-":
+            up_rotation = FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), -90)
+        
+        # Compose placement: first translate to origin, then rotate around origin
+        translate_to_origin = FreeCAD.Placement(offset, FreeCAD.Rotation())
+        rotate_at_origin = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), up_rotation)
+        final_placement = rotate_at_origin.multiply(translate_to_origin)
+        
+        master_shape_obj.Placement = final_placement
             
         if hasattr(master_shape_obj, "ViewObject"):
             master_shape_obj.ViewObject.Visibility = True
@@ -432,11 +420,17 @@ class ShapePreparer:
                 shape_instance.fill_sheet = fill_sheet
                 shape_instance.up_direction = up_direction
 
-                # Create temp copy using addObject (NOT copyObject to avoid link corruption)
                 part_copy = self.doc.addObject("Part::Feature", f"part_{shape_instance.id}")
+                
+                # Copy shape from master
+                # Note: For rotated shapes, master has rotated+centered geometry
                 part_copy.Shape = master_shape_obj.Shape.copy()
-                # CLEAN OFFSET DESIGN: Leave placement at identity - shape stays at natural position
-                part_copy.Placement = FreeCAD.Placement()  # Identity
+                
+                # Debug: Check what geometry we're getting
+                if up_direction != "Z+" and up_direction is not None:
+                    FreeCAD.Console.PrintMessage(f"     Part copy {shape_instance.id}: BoundBox={part_copy.Shape.BoundBox}\n")
+                
+                part_copy.Placement = FreeCAD.Placement()  # Identity - let sheet.py handle placement
                 
                 # Copy boundary if exists
                 if hasattr(master_shape_obj, "BoundaryObject") and master_shape_obj.BoundaryObject:
