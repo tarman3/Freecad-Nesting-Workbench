@@ -209,6 +209,17 @@ class Sheet:
 
         # --- Simulation Drawing Mode (with transient_part) ---
         elif transient_part:
+            # Draw/update sheet boundary during simulation
+            sim_boundary_name = f"sim_sheet_boundary_{self.id}"
+            sim_boundary = doc.getObject(sim_boundary_name)
+            if not sim_boundary:
+                sim_boundary = doc.addObject("Part::Feature", sim_boundary_name)
+                sim_boundary.Shape = Part.makePlane(self.width, self.height)
+                if FreeCAD.GuiUp:
+                    sim_boundary.ViewObject.Transparency = 75
+                    sim_boundary.ViewObject.DisplayMode = "Flat Lines"
+            sim_boundary.Placement = FreeCAD.Placement(sheet_origin, FreeCAD.Rotation())
+            
             self._draw_single_part(doc, transient_part, sheet_origin, ui_params)
 
     def _draw_single_part(self, doc, shape, sheet_origin, ui_params, shapes_group=None, parts_to_place_group=None):

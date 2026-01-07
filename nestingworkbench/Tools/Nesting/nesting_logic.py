@@ -55,7 +55,7 @@ def _draw_trial_bounds(part, angle, x, y):
         pass  # Silently ignore drawing errors
 
 def _cleanup_trial_viz():
-    """Removes the trial visualization object."""
+    """Removes the trial visualization object and simulation sheet boundaries."""
     global _trial_viz_obj
     if _trial_viz_obj:
         try:
@@ -65,6 +65,19 @@ def _cleanup_trial_viz():
         except:
             pass
         _trial_viz_obj = None
+    
+    # Clean up simulation sheet boundaries
+    try:
+        doc = FreeCAD.ActiveDocument
+        if doc:
+            to_remove = [o.Name for o in doc.Objects if o.Label.startswith("sim_sheet_boundary_")]
+            for name in to_remove:
+                try:
+                    doc.removeObject(name)
+                except:
+                    pass
+    except:
+        pass
 
 # --- Master Shape Highlighting ---
 _current_highlighted_master = None  # Track the currently highlighted master container

@@ -392,6 +392,10 @@ class NestingController:
                         sheet.draw(self.doc, ui_params, layout.layout_group, 
                                    parts_to_place_group=layout.parts_group)
                     
+                    # Hide completed layout to reduce visual clutter (when population > 1)
+                    if population_size > 1 and layout.layout_group and hasattr(layout.layout_group, "ViewObject"):
+                        layout.layout_group.ViewObject.Visibility = False
+                    
                     QtGui.QApplication.processEvents()
                 
                 # Sort by fitness (lower is better)
