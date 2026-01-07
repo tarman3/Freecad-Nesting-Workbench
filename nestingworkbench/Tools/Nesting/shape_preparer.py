@@ -422,15 +422,15 @@ class ShapePreparer:
 
                 part_copy = self.doc.addObject("Part::Feature", f"part_{shape_instance.id}")
                 
-                # Copy shape from master
-                # Note: For rotated shapes, master has rotated+centered geometry
+                # Copy shape from master (raw geometry)
                 part_copy.Shape = master_shape_obj.Shape.copy()
+                
+                # Copy the master's placement (which includes translate+rotate for centering and up_direction)
+                part_copy.Placement = master_shape_obj.Placement
                 
                 # Debug: Check what geometry we're getting
                 if up_direction != "Z+" and up_direction is not None:
                     FreeCAD.Console.PrintMessage(f"     Part copy {shape_instance.id}: BoundBox={part_copy.Shape.BoundBox}\n")
-                
-                part_copy.Placement = FreeCAD.Placement()  # Identity - let sheet.py handle placement
                 
                 # Copy boundary if exists
                 if hasattr(master_shape_obj, "BoundaryObject") and master_shape_obj.BoundaryObject:

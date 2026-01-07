@@ -260,32 +260,8 @@ class Sheet:
                             boundary_obj.ViewObject.LineColor = (1.0, 0.0, 0.0)  # Red
                             boundary_obj.ViewObject.LineWidth = 2.0
 
-                    # Place the shape object inside the container
-                    # Apply offset to center on bounds, AND rotation for up_direction
-                    up_direction = getattr(shape, 'up_direction', 'Z+')
-                    
-                    # Offset to center shape - use the 3D shape's center
-                    offset = shape_obj.Shape.CenterOfMass.negative()
-                    
-                    # Get up_direction rotation
-                    up_rotation = FreeCAD.Rotation()
-                    if up_direction == "Z-":
-                        up_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), 180)
-                    elif up_direction == "Y+":
-                        up_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), -90)
-                    elif up_direction == "Y-":
-                        up_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), 90)
-                    elif up_direction == "X+":
-                        up_rotation = FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), 90)
-                    elif up_direction == "X-":
-                        up_rotation = FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), -90)
-                    
-                    # Compose placement: first translate to origin, then rotate around origin
-                    translate_to_origin = FreeCAD.Placement(offset, FreeCAD.Rotation())
-                    rotate_at_origin = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), up_rotation)
-                    final_shape_placement = rotate_at_origin.multiply(translate_to_origin)
-                    
-                    shape_obj.Placement = final_shape_placement
+                    # The shape_obj already has the correct placement (centered + rotated)
+                    # from shape_preparer, so we don't touch it. Just add to container.
 
                     if hasattr(shape_obj, "ViewObject"):
                         shape_obj.ViewObject.Visibility = True
