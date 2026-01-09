@@ -58,10 +58,19 @@ class NestingPanel(QtGui.QWidget):
         
         # --- Advanced Boundary Settings ---
         self.deflection_input = QtGui.QDoubleSpinBox(); self.deflection_input.setRange(0.001, 1.0); self.deflection_input.setValue(0.05); self.deflection_input.setSingleStep(0.01); self.deflection_input.setDecimals(3)
-        self.deflection_input.setToolTip("Maximum deviation from original curve (mm). Lower = Smoother used for boundary creation.")
+        self.deflection_input.setToolTip(
+            "<b>Deflection (Curve Quality):</b><br>"
+            "Controls how smoothly curves are approximated.<br>"
+            "Smaller = Smoother (more points, slower).<br>"
+            "Larger = Coarser (fewer points, faster)."
+        )
         
-        self.simplification_input = QtGui.QDoubleSpinBox(); self.simplification_input.setRange(0.001, 1.0); self.simplification_input.setValue(0.1); self.simplification_input.setSingleStep(0.01); self.simplification_input.setDecimals(3)
-        self.simplification_input.setToolTip("Tolerance for removing redundant points (mm). Higher = Fewer points used for optimization.")
+        self.simplification_input = QtGui.QDoubleSpinBox(); self.simplification_input.setRange(0.001, 10.0); self.simplification_input.setValue(0.1); self.simplification_input.setSingleStep(0.01); self.simplification_input.setDecimals(3)
+        self.simplification_input.setToolTip(
+            "<b>Simplification (Optimization):</b><br>"
+            "Tolerance for removing redundant points.<br>"
+            "Higher = Fewer points, faster nesting."
+        )
 
         self.info_button = QtGui.QPushButton("Make default (20)")
         self.info_button.setToolTip("Show info about Deflection and Simplification")
