@@ -272,12 +272,11 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution
         raise ValueError("2D Profile has no outer wire.")
 
     # Discretize the wire to convert it into a series of points for Shapely.
-    # PREVIOUS ERROR: Used fixed number of points (Length/resolution) which yields
-    # very poor resolution (large segments) for large parts, destroying curve detail.
-    # FIX: Use Deflection (adaptive) for high fidelity on curves.
-    
-    # 0.05mm deflection is high quality for nesting
-    deflection_tol = 0.05
+    # We map the UI 'resolution' (e.g. 50-1000, default ~300) to a Deflection tolerance.
+    # A resolution of 300 gives ~0.05mm deflection (High Quality).
+    # Higher resolution value = Smaller deflection = Higher quality.
+    safe_resolution = float(resolution) if resolution > 10 else 10.0
+    deflection_tol = 15.0 / safe_resolution
     
     # --- Process Outer Wire ---
     # use Deflection instead of Distance
@@ -321,9 +320,9 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution
     buffered_polygon = final_polygon_unbuffered.buffer(spacing / 2.0, join_style=1)
     
     # Simplify the buffered polygon to reduce vertex count.
-    # Use a small fixed tolerance (e.g. 0.1mm) to keep curves smooth but remove collinear points.
-    # Do NOT use the old length-based discretize_distance which was huge.
-    buffered_polygon = buffered_polygon.simplify(0.1, preserve_topology=True)
+    # Use a tolerance relative to the deflection to keep curves smooth.
+    # usually 2x deflection is a good balance between point count and smoothness.
+    buffered_polygon = buffered_polygon.simplify(deflection_tol * 2.0, preserve_topology=True)
 
     if buffered_polygon.is_empty:
          raise ValueError("Buffering operation did not produce a valid polygon.")
