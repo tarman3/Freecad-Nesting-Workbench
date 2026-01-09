@@ -167,7 +167,13 @@ class ShapePreparer:
             temp_container.SourceCentroid = original_container.SourceCentroid
         else:
             # Fallback: calculate from geometry (less ideal but works)
-            temp_container.SourceCentroid = master_obj.Shape.CenterOfMass
+            # Use BoundBox of the Shape directly (it is already the transformed original)
+            bb = master_obj.Shape.BoundBox
+            temp_container.SourceCentroid = FreeCAD.Vector(
+                 (bb.XMin + bb.XMax) / 2,
+                 (bb.YMin + bb.YMax) / 2,
+                 (bb.ZMin + bb.ZMax) / 2
+            )
         
         # 2. Create the shape object - copy geometry, center at origin with -source_centroid
         temp_master_obj = self.doc.addObject("Part::Feature", f"temp_shape_{original_label}")
@@ -284,11 +290,21 @@ class ShapePreparer:
         # Store the source_centroid as a property on the container - this is THE source of truth
         # for the offset between the Shapely polygon (centered at 0,0) and the FreeCAD geometry
         master_container.addProperty("App::PropertyVector", "SourceCentroid", "Nesting", "Original geometry center")
-        if temp_shape_wrapper.source_centroid:
+        if temp_shape_wrapper.source_centroid is not None:
             master_container.SourceCentroid = temp_shape_wrapper.source_centroid
         else:
-            # Fallback: use the shape's actual center of mass
-            master_container.SourceCentroid = master_obj.Shape.CenterOfMass
+            # Fallback: use the shape's bounding box center (safer than CenterOfMass for Compounds)
+            # Must match logic in shape_processor: transform effectively to world coords first
+            temp_shape = master_obj.Shape.copy()
+            if master_obj.Placement and not master_obj.Placement.isIdentity():
+                temp_shape.transformShape(master_obj.Placement.Matrix)
+            
+            bb = temp_shape.BoundBox
+            master_container.SourceCentroid = FreeCAD.Vector(
+                (bb.XMin + bb.XMax) / 2,
+                (bb.YMin + bb.YMax) / 2,
+                (bb.ZMin + bb.ZMax) / 2
+            )
 
         # Make container visible during nesting (child boundary visibility is toggled by highlighting)
         if hasattr(master_container, "ViewObject"):

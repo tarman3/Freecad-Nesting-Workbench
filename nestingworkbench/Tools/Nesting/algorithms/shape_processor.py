@@ -58,7 +58,13 @@ def get_2d_profile_from_obj(obj, up_direction="Z+"):
     
     if needs_rotation:
         # Rotate the shape around its center
-        center = shape.CenterOfMass
+        # Use BoundBox center to be safe for Compounds
+        bb = shape.BoundBox
+        center = FreeCAD.Vector(
+            (bb.XMin + bb.XMax) / 2,
+            (bb.YMin + bb.YMax) / 2,
+            (bb.ZMin + bb.ZMax) / 2
+        )
         placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), rotation, center)
         shape.transformShape(placement.Matrix)
         FreeCAD.Console.PrintMessage(f"  -> Rotated shape for up_direction={up_direction}\n")
@@ -86,36 +92,122 @@ def get_2d_profile_from_obj(obj, up_direction="Z+"):
     try:
         FreeCAD.Console.PrintMessage(f"  -> Meshing shape for '{obj.Label}'\n")
         
-        from shapely.geometry import MultiPoint, LineString, Polygon as ShapelyPolygon
+        from shapely.geometry import MultiPoint, LineString, Polygon as ShapelyPolygon, MultiPolygon
         
         # Tessellate the shape to get mesh vertices
         # This handles curved surfaces by creating triangle vertices
-        mesh = shape.tessellate(0.5)  # tolerance in mm
+        # Tessellate the shape to get mesh vertices
+        # This handles curved surfaces by creating triangle vertices
+        # Use finer mesh for better resolution as requested (0.1mm instead of 0.5mm)
+        mesh = shape.tessellate(0.1)
         vertices = mesh[0]  # List of (x, y, z) tuples
         
-        if len(vertices) >= 3:
-            # Project all mesh vertices to XY plane
-            points_2d = [(v[0], v[1]) for v in vertices]
+        if len(vertices) >= 3 and hasattr(mesh[1], '__iter__'):
+            # mesh[0] is vertices, mesh[1] is facets (indices of triangles)
+            # We want to create a union of all projected triangles to preserve concavity
+            from shapely.ops import unary_union
+            from shapely.geometry import GeometryCollection
             
-            # Create convex hull from all projected points
-            multi_point = MultiPoint(points_2d)
-            hull = multi_point.convex_hull
-            
-            # Handle degenerate cases (thin shapes become LineString)
-            if isinstance(hull, LineString):
-                # Buffer the line to create a thin polygon
-                hull = hull.buffer(0.1)  # 0.1mm thickness
-                FreeCAD.Console.PrintMessage(f"  -> Thin shape detected, buffering line\n")
-            
-            if hasattr(hull, 'exterior') and hull.is_valid:
-                coords = list(hull.exterior.coords)
-                if len(coords) >= 4:  # Need at least 4 points (3 + closing point)
-                    # Create a FreeCAD face from the hull
-                    fc_points = [FreeCAD.Vector(x, y, 0) for x, y in coords]
-                    wire = Part.makePolygon(fc_points)
-                    return Part.Face(wire)
+            polygons = []
+            facets = mesh[1]
+
+            # Process all facets
+            for facet in facets:
+                # facet is a tuple of vertex indices (v1, v2, v3)
+                p1 = vertices[facet[0]]
+                p2 = vertices[facet[1]]
+                p3 = vertices[facet[2]]
+                
+                # Round coordinates to avoid precision issues with coincident edges
+                # 4 decimal places = 0.1 micron precision, sufficient for wood/CNC
+                p1_xy = (round(p1[0], 4), round(p1[1], 4))
+                p2_xy = (round(p2[0], 4), round(p2[1], 4))
+                p3_xy = (round(p3[0], 4), round(p3[1], 4))
+
+                # Create triangle polygon
+                # Check for degenerate triangles (collinear points)
+                poly = ShapelyPolygon([p1_xy, p2_xy, p3_xy])
+                
+                # Buffer(0) helps fix self-intersection or invalidity issues
+                if poly.is_valid and not poly.is_empty and poly.area > 1e-6:
+                     cleaned = poly.buffer(0)
+                     if not cleaned.is_empty:
+                         if isinstance(cleaned, ShapelyPolygon):
+                             polygons.append(cleaned)
+                         elif isinstance(cleaned, MultiPolygon):
+                             polygons.extend(cleaned.geoms)
+
+            if polygons:
+                try:
+                    # Union of all triangles
+                    # buffer(0) on the whole set can sometimes handle overlaps better than unary_union alone?
+                    # But unary_union is designed for this.
+                    FreeCAD.Console.PrintMessage(f"  -> Merging {len(polygons)} triangles for '{obj.Label}'\n")
+                    merged = unary_union(polygons)
+                    
+                    # Sometimes simple unions result in messy collections. Clean up.
+                    if hasattr(merged, "is_valid") and not merged.is_valid:
+                        merged = merged.buffer(0)
+
+                    valid_polys = []
+                    # Unpack result
+                    if isinstance(merged, (ShapelyPolygon, MultiPolygon)):
+                         pass # handled below
+                    elif isinstance(merged, GeometryCollection):
+                         # Extract only polygons from collection
+                         for g in merged.geoms:
+                             if isinstance(g, (ShapelyPolygon, MultiPolygon)):
+                                 if isinstance(g, MultiPolygon):
+                                     valid_polys.extend(g.geoms)
+                                 else:
+                                     valid_polys.append(g)
+                         merged = unary_union(valid_polys) if valid_polys else None
+
+                    if merged and not merged.is_empty:
+                        # If result is MultiPolygon, take largest (most likely the body)
+                        # Or if they are disjoint islands, we might need all?
+                        # Usually for a single part, islands are valid (e.g. O has a hole, but islands?)
+                        # If we have islands, we should probably output a Face with multiple disjoint wires.
+                        # For now, let's assume one main body like typical CNC parts.
+                        if isinstance(merged, MultiPolygon):
+                             merged = max(merged.geoms, key=lambda p: p.area)
+                        
+                        if isinstance(merged, ShapelyPolygon):
+                            if hasattr(merged, 'exterior') and merged.is_valid:
+                                coords = list(merged.exterior.coords)
+                                if len(coords) >= 4:
+                                    fc_points = [FreeCAD.Vector(x, y, 0) for x, y in coords]
+                                    wire = Part.makePolygon(fc_points)
+                                    
+                                    wires_list = [wire]
+                                    for interior in merged.interiors:
+                                        h_coords = list(interior.coords)
+                                        if len(h_coords) >= 4:
+                                            h_fc_points = [FreeCAD.Vector(x,y,0) for x,y in h_coords]
+                                            wires_list.append(Part.makePolygon(h_fc_points))
+                                    
+                                    # Fix: Part.Face takes a list of wires, not a Compound
+                                    return Part.Face(wires_list)
+                except Exception as union_e:
+                    FreeCAD.Console.PrintWarning(f"  -> Union failed for '{obj.Label}': {union_e}. Falling back to convex hull.\n")
+
+        # Fallback if no facets (e.g. only vertices?) or union failed: use Convex Hull of vertices
+        FreeCAD.Console.PrintMessage(f"  -> Fallback to convex hull for '{obj.Label}'\n")
+        points_2d = [(v[0], v[1]) for v in vertices]
+        multi_point = MultiPoint(points_2d)
+        hull = multi_point.convex_hull
+
+        if isinstance(hull, LineString):
+             hull = hull.buffer(0.1)
+
+        if hasattr(hull, 'exterior') and hull.is_valid:
+             coords = list(hull.exterior.coords)
+             if len(coords) >= 4:
+                 fc_points = [FreeCAD.Vector(x, y, 0) for x, y in coords]
+                 wire = Part.makePolygon(fc_points)
+                 return Part.Face(wire)
         
-        # Fallback: use BoundBox
+        # Absolute Fallback: use BoundBox
         FreeCAD.Console.PrintWarning(f"  -> Using bounding box for '{obj.Label}'\n")
         bb = shape.BoundBox
         points = [
@@ -180,12 +272,16 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution
         raise ValueError("2D Profile has no outer wire.")
 
     # Discretize the wire to convert it into a series of points for Shapely.
-    discretize_distance = outer_wire.Length / float(resolution)
-    if discretize_distance < 1e-3:
-        discretize_distance = 1e-3
-
+    # PREVIOUS ERROR: Used fixed number of points (Length/resolution) which yields
+    # very poor resolution (large segments) for large parts, destroying curve detail.
+    # FIX: Use Deflection (adaptive) for high fidelity on curves.
+    
+    # 0.05mm deflection is high quality for nesting
+    deflection_tol = 0.05
+    
     # --- Process Outer Wire ---
-    points = [(v.x, v.y) for v in outer_wire.discretize(Distance=discretize_distance)]
+    # use Deflection instead of Distance
+    points = [(v.x, v.y) for v in outer_wire.discretize(Deflection=deflection_tol)]
     if len(points) < 3:
         raise ValueError("Not enough points in outer wire to form a polygon.")
     if points[0] != points[-1]:
@@ -203,7 +299,7 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution
     inner_wires = [w for w in profile_2d.Wires if not w.isSame(outer_wire)]
     hole_contours = []
     for inner_wire in inner_wires:
-        hole_points = [(v.x, v.y) for v in inner_wire.discretize(Distance=discretize_distance)]
+        hole_points = [(v.x, v.y) for v in inner_wire.discretize(Deflection=deflection_tol)]
         if len(hole_points) < 3:
             continue
         if hole_points[0] != hole_points[-1]:
@@ -225,8 +321,9 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution
     buffered_polygon = final_polygon_unbuffered.buffer(spacing / 2.0, join_style=1)
     
     # Simplify the buffered polygon to reduce vertex count.
-    # We use the discretization distance as the tolerance.
-    buffered_polygon = buffered_polygon.simplify(discretize_distance, preserve_topology=True)
+    # Use a small fixed tolerance (e.g. 0.1mm) to keep curves smooth but remove collinear points.
+    # Do NOT use the old length-based discretize_distance which was huge.
+    buffered_polygon = buffered_polygon.simplify(0.1, preserve_topology=True)
 
     if buffered_polygon.is_empty:
          raise ValueError("Buffering operation did not produce a valid polygon.")
@@ -245,12 +342,36 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, resolution
 
     # --- Create the ShapeBounds object ---
     # The source_centroid is the pivot point for the final part placement.
-    # It's the original geometry's centroid, adjusted by the offset that occurred
-    # during buffering and re-centering. This ensures the final part rotates around
-    # its true geometric center.
+    # It must map the new Polygon Centroid (Origin) back to the 3D Geometry.
+    
+    # offset_from_origin is the vector in the 2D PROFILE PLANE.
+    # It needs to be rotated back to world space.
+    rotation = _get_rotation_for_up_direction(up_direction)
+    # The inverse rotation is the conjugate (for rotations) or negative angle
+    # FreeCAD Rotation objects have .inverted() method? 
+    # Or just use the same axis with negative angle.
+    
+    # Re-calculate inverse rotation manually to be safe
+    inv_rotation = None
+    if up_direction == "Z-":
+        inv_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), -180)
+    elif up_direction == "Y+":
+        inv_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), 90) # Inverse of -90
+    elif up_direction == "Y-":
+        inv_rotation = FreeCAD.Rotation(FreeCAD.Vector(1, 0, 0), -90) # Inverse of 90
+    elif up_direction == "X+":
+        inv_rotation = FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), -90) # Inverse of 90
+    elif up_direction == "X-":
+        inv_rotation = FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), 90) # Inverse of -90
+    else:
+        inv_rotation = FreeCAD.Rotation()
+
+    offset_3d = FreeCAD.Vector(offset_from_origin.x, offset_from_origin.y, 0)
+    rotated_offset = inv_rotation.multVec(offset_3d)
+
     shape_to_populate.polygon = final_buffered_polygon
     shape_to_populate.original_polygon = final_buffered_polygon
     shape_to_populate.spacing = spacing
     shape_to_populate.resolution = float(resolution)
     shape_to_populate.unbuffered_polygon = final_unbuffered_polygon
-    shape_to_populate.source_centroid = source_centroid + offset_from_origin
+    shape_to_populate.source_centroid = source_centroid + rotated_offset
