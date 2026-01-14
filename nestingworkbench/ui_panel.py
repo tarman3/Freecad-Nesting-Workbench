@@ -38,7 +38,7 @@ class PackerUI(QtGui.QWidget):
         self.sheet_width_input = QtGui.QDoubleSpinBox(); self.sheet_width_input.setRange(1, 10000); self.sheet_width_input.setValue(600)
         self.sheet_height_input = QtGui.QDoubleSpinBox(); self.sheet_height_input.setRange(1, 10000); self.sheet_height_input.setValue(600)
         self.part_spacing_input = QtGui.QDoubleSpinBox(); self.part_spacing_input.setRange(0, 1000); self.part_spacing_input.setValue(12.5)
-        self.material_thickness_input = QtGui.QDoubleSpinBox(); self.material_thickness_input.setRange(0.1, 1000); self.material_thickness_input.setValue(3.0)
+        self.material_thickness_input = QtGui.QDoubleSpinBox(); self.material_thickness_input.setRange(0.1, 1000); self.material_thickness_input.setValue(10.0)
         
         self.shape_table = QtGui.QTableWidget()
         self.shape_table.setColumnCount(2)

@@ -31,59 +31,97 @@ class CAMManager:
         try:
             from CAM.Path.Main import Job as PathJob
             from CAM.Path.Main.Gui import Job as PathJobGui
+            from CAM.Path.Main import Stock as PathStock
         except ImportError as e:
             FreeCAD.Console.PrintError(f"Failed to import CAM modules. Error: {e}\n")
             FreeCAD.Console.PrintError("Please ensure the CAM workbench is installed and enabled in FreeCAD 1.1+.\n")
             return
         
-        # Get material thickness from layout spreadsheet
-        material_thickness = 3.0  # Default value
+        # Get layout parameters from spreadsheet
+        sheet_width = 600.0  # Default values
+        sheet_height = 600.0
+        material_thickness = 10.0
+        
         if self.layout_group:
             spreadsheet = self.layout_group.getObject("LayoutParameters")
             if spreadsheet:
                 try:
-                    thickness_value = spreadsheet.get('B5')
-                    if thickness_value:
-                        material_thickness = float(thickness_value)
+                    # Read sheet dimensions
+                    width_val = spreadsheet.get('B2')
+                    if width_val:
+                        sheet_width = float(width_val)
+                    height_val = spreadsheet.get('B3')
+                    if height_val:
+                        sheet_height = float(height_val)
+                    # Read material thickness  
+                    thickness_val = spreadsheet.get('B5')
+                    if thickness_val:
+                        material_thickness = float(thickness_val)
                 except Exception as e:
-                    FreeCAD.Console.PrintWarning(f"Could not read material thickness from spreadsheet: {e}\n")
+                    FreeCAD.Console.PrintWarning(f"Could not read parameters from spreadsheet: {e}\n")
         
-        # Find the sheet object (Stock)
-        sheet_object = None
+        # Find the sheet boundary and all nested parts
+        sheet_boundary = None
+        parts_to_machine = []
         
         for obj in sheet_group.Group:
+            # Check for Stock (Sheet Boundary)
             if obj.Label.startswith("Sheet_Boundary"):
-                 sheet_object = obj
-                 break
+                sheet_boundary = obj
+            
+            # Check for the Parts container (Shapes_X)
+            elif obj.Label.startswith("Shapes_") and obj.isDerivedFrom("App::DocumentObjectGroup"):
+                # Found the parts group - use the App::Part containers directly
+                # These have the correct placement for the nested position
+                for nested_part in obj.Group:
+                    # Each nested_part is an App::Part at the correct nested location
+                    if nested_part.isDerivedFrom("App::Part"):
+                        parts_to_machine.append(nested_part)
+                    elif hasattr(nested_part, 'Shape') and nested_part.Shape:
+                        # Fallback for direct Part::Feature objects
+                        parts_to_machine.append(nested_part)
         
-        if not sheet_object:
-            FreeCAD.Console.PrintError(f"Could not find sheet object in {sheet_group.Label}.\n")
+        if not sheet_boundary:
+            FreeCAD.Console.PrintError(f"Could not find sheet boundary in {sheet_group.Label}.\n")
             return
 
-        # Create a new CAM job for this sheet
-        job_name = f"CAM_Job_{sheet_group.Label}"
-        job = PathJob.Create(job_name, [sheet_object], None)
-        
-        # Configure the stock to match the sheet dimensions
-        stock = job.Stock
-        stock.ExtXneg = 0
-        stock.ExtXpos = 0
-        stock.ExtYneg = 0
-        stock.ExtYpos = 0
-        stock.ExtZneg = material_thickness
-        stock.ExtZpos = 0
+        if not parts_to_machine:
+            FreeCAD.Console.PrintWarning(f"No parts found to machine in {sheet_group.Label}. Skipping.\n")
+            return
 
+        # Create a new CAM job for this sheet with all the parts
+        job_name = f"CAM_Job_{sheet_group.Label}"
+        job = PathJob.Create(job_name, parts_to_machine, None)
+        
+        # Replace the stock with a CreateBox stock matching sheet dimensions
+        if job.Stock:
+            old_stock = job.Stock
+            self.doc.removeObject(old_stock.Name)
+        
+        # Create new box stock with sheet dimensions
+        new_stock = PathStock.CreateBox(job)
+        new_stock.Length = sheet_width
+        new_stock.Width = sheet_height
+        new_stock.Height = material_thickness
+        job.Stock = new_stock
+        
         # Set up the ViewProvider Proxy to enable proper tree view nesting
-        # This is critical - without this, the tree view won't show children
         try:
             import FreeCADGui
             if FreeCADGui.ActiveDocument and job.ViewObject:
-                # Assign the ViewProvider class to enable claimChildren()
                 job.ViewObject.Proxy = PathJobGui.ViewProvider(job.ViewObject)
+                
+                # Make the models visible by default
+                if job.Model and job.Model.ViewObject:
+                    job.Model.ViewObject.Visibility = True
+                    # Also make each model object visible
+                    for model_obj in job.Model.Group:
+                        if model_obj.ViewObject:
+                            model_obj.ViewObject.Visibility = True
         except Exception as e:
-            FreeCAD.Console.PrintWarning(f"Could not set ViewProvider: {e}\n")
+            FreeCAD.Console.PrintWarning(f"Could not configure ViewProvider: {e}\n")
 
         # Recompute to finalize the job
         self.doc.recompute()
         
-        FreeCAD.Console.PrintMessage(f"Created CAM job '{job_name}' for {sheet_group.Label} (thickness: {material_thickness}mm)\n")
+        FreeCAD.Console.PrintMessage(f"Created CAM job '{job_name}' for {sheet_group.Label} with {len(parts_to_machine)} parts (sheet: {sheet_width}x{sheet_height}x{material_thickness}mm)\n")

@@ -225,6 +225,7 @@ class NestingJob:
         self._set_prop(layout_obj, "App::PropertyLength", "SheetWidth", p['sheet_width'])
         self._set_prop(layout_obj, "App::PropertyLength", "SheetHeight", p['sheet_height'])
         self._set_prop(layout_obj, "App::PropertyLength", "PartSpacing", p['spacing'])
+        self._set_prop(layout_obj, "App::PropertyLength", "MaterialThickness", p['material_thickness'])
         self._set_prop(layout_obj, "App::PropertyFloat", "Deflection", p.get('deflection', 0.05))
         self._set_prop(layout_obj, "App::PropertyFloat", "Simplification", p.get('simplification', 0.1))
         self._set_prop(layout_obj, "App::PropertyFile", "FontFile", p['font_path'])
