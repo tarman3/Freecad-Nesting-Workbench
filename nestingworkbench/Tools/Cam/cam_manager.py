@@ -86,7 +86,7 @@ class CAMManager:
                         # Find the part_* and label_* shapes inside the container
                         for child in nested_part.Group:
                             if hasattr(child, 'Shape') and child.Shape and not child.Shape.isNull():
-                                # Create CAM part
+                                # Create CAM part - positioned so bottom face is at Z = -sheet_thickness
                                 if child.Label.startswith("part_"):
                                     cam_part_name = f"CAM_{child.Label}"
                                     cam_part = self.doc.addObject("Part::Feature", cam_part_name)
@@ -96,11 +96,17 @@ class CAMManager:
                                     transformed_shape = child.Shape.copy()
                                     transformed_shape.Placement = FreeCAD.Placement()  # Reset placement
                                     transformed_shape = transformed_shape.transformGeometry(combined_placement.toMatrix())
+                                    
+                                    # Get shape's current Z bounds and move so bottom is at Z = -sheet_thickness
+                                    z_min = transformed_shape.BoundBox.ZMin
+                                    z_offset = -sheet_thickness - z_min  # Move so ZMin = -sheet_thickness
+                                    z_offset_placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, z_offset), FreeCAD.Rotation())
+                                    transformed_shape = transformed_shape.transformGeometry(z_offset_placement.toMatrix())
                                     cam_part.Shape = transformed_shape
                                     
                                     parts_to_machine.append(cam_part)
                                 
-                                # Create CAM label
+                                # Create CAM label - positioned so bottom face is at Z = 0 (top of stock)
                                 elif child.Label.startswith("label_"):
                                     cam_label_name = f"CAM_{child.Label}"
                                     cam_label = self.doc.addObject("Part::Feature", cam_label_name)
@@ -110,6 +116,12 @@ class CAMManager:
                                     transformed_shape = child.Shape.copy()
                                     transformed_shape.Placement = FreeCAD.Placement()
                                     transformed_shape = transformed_shape.transformGeometry(combined_placement.toMatrix())
+                                    
+                                    # Get shape's current Z bounds and move so bottom is at Z = 0
+                                    z_min = transformed_shape.BoundBox.ZMin
+                                    z_offset = -z_min  # Move so ZMin = 0
+                                    z_offset_placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, z_offset), FreeCAD.Rotation())
+                                    transformed_shape = transformed_shape.transformGeometry(z_offset_placement.toMatrix())
                                     cam_label.Shape = transformed_shape
                                     
                                     labels_to_machine.append(cam_label)
