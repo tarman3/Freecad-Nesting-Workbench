@@ -13,8 +13,14 @@ class CAMManager:
         self.doc = FreeCAD.ActiveDocument
         self.layout_group = layout_group
 
-    def create_cam_job(self):
-        """Main method to create the CAM job."""
+    def create_cam_job(self, include_parts=True, include_labels=True, include_outlines=False):
+        """Main method to create the CAM job.
+        
+        Args:
+            include_parts: Include part_* objects (full cuts)
+            include_labels: Include label_* objects (engraving)
+            include_outlines: Include outline_* objects (silhouettes)
+        """
         if not self.layout_group:
              FreeCAD.Console.PrintError("No layout group provided.\\n")
              return
@@ -23,11 +29,18 @@ class CAMManager:
         for obj in self.layout_group.Group:
             # We assume groups starting with "Sheet_" are the sheet containers
             if obj.isDerivedFrom("App::DocumentObjectGroup") and obj.Label.startswith("Sheet_"):
-                self._create_job_for_sheet(obj)
+                self._create_job_for_sheet(obj, include_parts, include_labels, include_outlines)
 
 
-    def _create_job_for_sheet(self, sheet_group):
-        """Creates a CAM job for a sheet with proper stock dimensions."""
+    def _create_job_for_sheet(self, sheet_group, include_parts=True, include_labels=True, include_outlines=False):
+        """Creates a CAM job for a sheet with proper stock dimensions.
+        
+        Args:
+            sheet_group: The Sheet_X group to process
+            include_parts: Include part_* objects (full cuts)
+            include_labels: Include label_* objects (engraving)
+            include_outlines: Include outline_* objects (silhouettes)
+        """
         # Import CAM modules (FreeCAD 1.1+)
         try:
             from CAM.Path.Main import Job as PathJob
@@ -70,10 +83,10 @@ class CAMManager:
                     except Exception as e:
                         FreeCAD.Console.PrintWarning(f"Could not read parameters from spreadsheet: {e}\\n")
         
-        # Collect the part_* shapes with their container placements applied
-        # Create Part::Feature with shape already transformed (placement baked into geometry)
+        # Collect shapes based on selected options
         parts_to_machine = []
         labels_to_machine = []
+        outlines_to_machine = []
         
         for obj in sheet_group.Group:
             # Check for the Parts container (Shapes_X)
@@ -83,11 +96,11 @@ class CAMManager:
                         # Get container placement
                         container_placement = nested_part.Placement
                         
-                        # Find the part_* and label_* shapes inside the container
+                        # Find the part_*, label_*, and outline_* shapes inside the container
                         for child in nested_part.Group:
                             if hasattr(child, 'Shape') and child.Shape and not child.Shape.isNull():
                                 # Create CAM part - positioned so bottom face is at Z = -sheet_thickness
-                                if child.Label.startswith("part_"):
+                                if include_parts and child.Label.startswith("part_"):
                                     cam_part_name = f"CAM_{child.Label}"
                                     cam_part = self.doc.addObject("Part::Feature", cam_part_name)
                                     
@@ -107,7 +120,7 @@ class CAMManager:
                                     parts_to_machine.append(cam_part)
                                 
                                 # Create CAM label - positioned so bottom face is at Z = 0 (top of stock)
-                                elif child.Label.startswith("label_"):
+                                elif include_labels and child.Label.startswith("label_"):
                                     cam_label_name = f"CAM_{child.Label}"
                                     cam_label = self.doc.addObject("Part::Feature", cam_label_name)
                                     
@@ -125,14 +138,38 @@ class CAMManager:
                                     cam_label.Shape = transformed_shape
                                     
                                     labels_to_machine.append(cam_label)
+                                
+                                # Create CAM outline (silhouette) - already at Z=0, just needs XY transform
+                                elif include_outlines and child.Label.startswith("outline_"):
+                                    cam_outline_name = f"CAM_{child.Label}"
+                                    cam_outline = self.doc.addObject("Part::Feature", cam_outline_name)
+                                    
+                                    # Bake the placement into the shape geometry
+                                    combined_placement = container_placement.multiply(child.Shape.Placement)
+                                    transformed_shape = child.Shape.copy()
+                                    transformed_shape.Placement = FreeCAD.Placement()
+                                    transformed_shape = transformed_shape.transformGeometry(combined_placement.toMatrix())
+                                    
+                                    # Outlines are already at Z=0, no Z offset needed
+                                    cam_outline.Shape = transformed_shape
+                                    
+                                    outlines_to_machine.append(cam_outline)
         
-        if not parts_to_machine:
-            FreeCAD.Console.PrintWarning(f"No parts found to machine in {sheet_group.Label}. Skipping.\\n")
+        all_models = parts_to_machine + labels_to_machine + outlines_to_machine
+        
+        if not all_models:
+            FreeCAD.Console.PrintWarning(f"No objects selected for CAM in {sheet_group.Label}. Skipping.\\n")
             return
         
-        # Combine parts and labels for the CAM job
-        all_models = parts_to_machine + labels_to_machine
-        FreeCAD.Console.PrintMessage(f"Creating CAM job with {len(parts_to_machine)} parts and {len(labels_to_machine)} labels...\\n")
+        # Build status message
+        counts = []
+        if parts_to_machine:
+            counts.append(f"{len(parts_to_machine)} parts")
+        if labels_to_machine:
+            counts.append(f"{len(labels_to_machine)} labels")
+        if outlines_to_machine:
+            counts.append(f"{len(outlines_to_machine)} outlines")
+        FreeCAD.Console.PrintMessage(f"Creating CAM job with {', '.join(counts)}...\\n")
         
         # Use GUI Create function which properly sets up all Model-Job linking
         try:
