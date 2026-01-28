@@ -409,14 +409,24 @@ def create_silhouettes_for_layout(doc, layout_group, cut_height=None, method="cr
                     continue
                 
                 # Find the part_* object inside the container
+                # Also check for existing outline_* objects to remove them
                 part_obj = None
+                existing_outlines = []
                 if hasattr(container, "Group"):
                     for child in container.Group:
                         if child.Label.startswith("part_"):
                             is_valid, reason = is_valid_shape_object(child)
                             if is_valid:
                                 part_obj = child
-                                break
+                        elif child.Label.startswith("outline_"):
+                            existing_outlines.append(child)
+                
+                # Remove existing silhouettes before creating new ones
+                for old_outline in existing_outlines:
+                    try:
+                        doc.removeObject(old_outline.Name)
+                    except Exception as e:
+                        FreeCAD.Console.PrintWarning(f"[Silhouette] Could not remove old outline '{old_outline.Label}': {e}\\n")
                 
                 if part_obj is None:
                     continue

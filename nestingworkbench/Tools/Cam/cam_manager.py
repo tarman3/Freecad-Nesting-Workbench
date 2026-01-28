@@ -183,30 +183,14 @@ class CAMManager:
                 # Rename the job to our desired name
                 job.Label = f"CAM_Job_{sheet_group.Label}"
                 
-                # CAM Model-* objects reference their base objects via Objects property
-                # Keep base objects accessible but hide them from view
-                base_group_name = f"CAM_BaseObjects_{sheet_group.Label}"
-                base_group = self.doc.addObject("App::DocumentObjectGroup", base_group_name)
-                
-                # Hide the base group itself
-                if hasattr(base_group, 'ViewObject') and base_group.ViewObject:
-                    base_group.ViewObject.Visibility = False
-                
+                # The CAM job creates its own Model-* objects that copy the geometry
+                # from our base objects. We can delete the temporary CAM_* base objects
+                # since they're no longer needed.
                 for cam_obj in all_models:
                     try:
-                        base_group.addObject(cam_obj)
-                        # Hide each base object
-                        if hasattr(cam_obj, 'ViewObject') and cam_obj.ViewObject:
-                            cam_obj.ViewObject.Visibility = False
+                        self.doc.removeObject(cam_obj.Name)
                     except Exception as e:
-                        FreeCAD.Console.PrintWarning(f"Could not organize CAM object {cam_obj.Name}: {e}\\n")
-                
-                # Add the base group under the layout group for organization
-                if self.layout_group:
-                    try:
-                        self.layout_group.addObject(base_group)
-                    except:
-                        pass
+                        FreeCAD.Console.PrintWarning(f"Could not remove temporary CAM object {cam_obj.Name}: {e}\\n")
                 
                 # Replace the stock with a CreateBox stock matching sheet dimensions
                 if job.Stock:
