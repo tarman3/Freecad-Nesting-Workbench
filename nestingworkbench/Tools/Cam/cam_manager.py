@@ -13,8 +13,14 @@ class CAMManager:
         self.doc = FreeCAD.ActiveDocument
         self.layout_group = layout_group
 
-    def create_cam_job(self):
-        """Main method to create the CAM job."""
+    def create_cam_job(self, include_parts=True, include_labels=True, include_outlines=False):
+        """Main method to create the CAM job.
+        
+        Args:
+            include_parts: Include part_* objects (full cuts)
+            include_labels: Include label_* objects (engraving)
+            include_outlines: Include outline_* objects (silhouettes)
+        """
         if not self.layout_group:
              FreeCAD.Console.PrintError("No layout group provided.\\n")
              return
@@ -23,11 +29,18 @@ class CAMManager:
         for obj in self.layout_group.Group:
             # We assume groups starting with "Sheet_" are the sheet containers
             if obj.isDerivedFrom("App::DocumentObjectGroup") and obj.Label.startswith("Sheet_"):
-                self._create_job_for_sheet(obj)
+                self._create_job_for_sheet(obj, include_parts, include_labels, include_outlines)
 
 
-    def _create_job_for_sheet(self, sheet_group):
-        """Creates a CAM job for a sheet with proper stock dimensions."""
+    def _create_job_for_sheet(self, sheet_group, include_parts=True, include_labels=True, include_outlines=False):
+        """Creates a CAM job for a sheet with proper stock dimensions.
+        
+        Args:
+            sheet_group: The Sheet_X group to process
+            include_parts: Include part_* objects (full cuts)
+            include_labels: Include label_* objects (engraving)
+            include_outlines: Include outline_* objects (silhouettes)
+        """
         # Import CAM modules (FreeCAD 1.1+)
         try:
             from CAM.Path.Main import Job as PathJob
@@ -70,10 +83,12 @@ class CAMManager:
                     except Exception as e:
                         FreeCAD.Console.PrintWarning(f"Could not read parameters from spreadsheet: {e}\\n")
         
-        # Collect the part_* shapes with their container placements applied
-        # Create Part::Feature with shape already transformed (placement baked into geometry)
-        parts_to_machine = []
-        labels_to_machine = []
+        # Collect transformed shapes for CAM
+        # We need to bake container placements into the geometry since CAM
+        # doesn't correctly handle objects nested in App::Part containers
+        parts_shapes = []
+        labels_shapes = []
+        outlines_shapes = []
         
         for obj in sheet_group.Group:
             # Check for the Parts container (Shapes_X)
@@ -83,56 +98,73 @@ class CAMManager:
                         # Get container placement
                         container_placement = nested_part.Placement
                         
-                        # Find the part_* and label_* shapes inside the container
+                        # Find the part_*, label_*, and outline_* shapes inside the container
                         for child in nested_part.Group:
                             if hasattr(child, 'Shape') and child.Shape and not child.Shape.isNull():
-                                # Create CAM part - positioned so bottom face is at Z = -sheet_thickness
-                                if child.Label.startswith("part_"):
-                                    cam_part_name = f"CAM_{child.Label}"
-                                    cam_part = self.doc.addObject("Part::Feature", cam_part_name)
-                                    
-                                    # Bake the placement into the shape geometry
-                                    combined_placement = container_placement.multiply(child.Shape.Placement)
-                                    transformed_shape = child.Shape.copy()
-                                    transformed_shape.Placement = FreeCAD.Placement()  # Reset placement
-                                    transformed_shape = transformed_shape.transformGeometry(combined_placement.toMatrix())
-                                    
-                                    # Get shape's current Z bounds and move so bottom is at Z = -sheet_thickness
-                                    z_min = transformed_shape.BoundBox.ZMin
-                                    z_offset = -sheet_thickness - z_min  # Move so ZMin = -sheet_thickness
-                                    z_offset_placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, z_offset), FreeCAD.Rotation())
-                                    transformed_shape = transformed_shape.transformGeometry(z_offset_placement.toMatrix())
-                                    cam_part.Shape = transformed_shape
-                                    
-                                    parts_to_machine.append(cam_part)
+                                # Transform shape to global coordinates
+                                combined_placement = container_placement.multiply(child.Placement)
+                                transformed_shape = child.Shape.copy()
+                                transformed_shape.Placement = FreeCAD.Placement()
+                                transformed_shape = transformed_shape.transformGeometry(combined_placement.toMatrix())
                                 
-                                # Create CAM label - positioned so bottom face is at Z = 0 (top of stock)
-                                elif child.Label.startswith("label_"):
-                                    cam_label_name = f"CAM_{child.Label}"
-                                    cam_label = self.doc.addObject("Part::Feature", cam_label_name)
-                                    
-                                    # Bake the placement into the shape geometry
-                                    combined_placement = container_placement.multiply(child.Shape.Placement)
-                                    transformed_shape = child.Shape.copy()
-                                    transformed_shape.Placement = FreeCAD.Placement()
-                                    transformed_shape = transformed_shape.transformGeometry(combined_placement.toMatrix())
-                                    
-                                    # Get shape's current Z bounds and move so bottom is at Z = 0
+                                if include_parts and child.Label.startswith("part_"):
+                                    # Adjust Z so bottom is at Z = -sheet_thickness
                                     z_min = transformed_shape.BoundBox.ZMin
-                                    z_offset = -z_min  # Move so ZMin = 0
-                                    z_offset_placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, z_offset), FreeCAD.Rotation())
-                                    transformed_shape = transformed_shape.transformGeometry(z_offset_placement.toMatrix())
-                                    cam_label.Shape = transformed_shape
-                                    
-                                    labels_to_machine.append(cam_label)
+                                    z_offset = -sheet_thickness - z_min
+                                    z_placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, z_offset), FreeCAD.Rotation())
+                                    transformed_shape = transformed_shape.transformGeometry(z_placement.toMatrix())
+                                    parts_shapes.append(transformed_shape)
+                                
+                                elif include_labels and child.Label.startswith("label_"):
+                                    # Labels at Z = 0
+                                    z_min = transformed_shape.BoundBox.ZMin
+                                    z_offset = -z_min
+                                    z_placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, z_offset), FreeCAD.Rotation())
+                                    transformed_shape = transformed_shape.transformGeometry(z_placement.toMatrix())
+                                    labels_shapes.append(transformed_shape)
+                                
+                                elif include_outlines and child.Label.startswith("outline_"):
+                                    outlines_shapes.append(transformed_shape)
         
-        if not parts_to_machine:
-            FreeCAD.Console.PrintWarning(f"No parts found to machine in {sheet_group.Label}. Skipping.\\n")
+        if not (parts_shapes or labels_shapes or outlines_shapes):
+            FreeCAD.Console.PrintWarning(f"No objects selected for CAM in {sheet_group.Label}. Skipping.\\n")
             return
         
-        # Combine parts and labels for the CAM job
-        all_models = parts_to_machine + labels_to_machine
-        FreeCAD.Console.PrintMessage(f"Creating CAM job with {len(parts_to_machine)} parts and {len(labels_to_machine)} labels...\\n")
+        # Build status message
+        counts = []
+        if parts_shapes:
+            counts.append(f"{len(parts_shapes)} parts")
+        if labels_shapes:
+            counts.append(f"{len(labels_shapes)} labels")
+        if outlines_shapes:
+            counts.append(f"{len(outlines_shapes)} outlines")
+        FreeCAD.Console.PrintMessage(f"Creating CAM job with {', '.join(counts)}...\\n")
+        
+        # Create compound objects for CAM (one per type)
+        # This minimizes the number of base objects
+        import Part
+        all_models = []
+        
+        if parts_shapes:
+            parts_compound = self.doc.addObject("Part::Feature", f"CAM_Parts_{sheet_group.Label}")
+            parts_compound.Shape = Part.Compound(parts_shapes)
+            if hasattr(parts_compound, 'ViewObject') and parts_compound.ViewObject:
+                parts_compound.ViewObject.Visibility = False
+            all_models.append(parts_compound)
+        
+        if labels_shapes:
+            labels_compound = self.doc.addObject("Part::Feature", f"CAM_Labels_{sheet_group.Label}")
+            labels_compound.Shape = Part.Compound(labels_shapes)
+            if hasattr(labels_compound, 'ViewObject') and labels_compound.ViewObject:
+                labels_compound.ViewObject.Visibility = False
+            all_models.append(labels_compound)
+        
+        if outlines_shapes:
+            outlines_compound = self.doc.addObject("Part::Feature", f"CAM_Outlines_{sheet_group.Label}")
+            outlines_compound.Shape = Part.Compound(outlines_shapes)
+            if hasattr(outlines_compound, 'ViewObject') and outlines_compound.ViewObject:
+                outlines_compound.ViewObject.Visibility = False
+            all_models.append(outlines_compound)
         
         # Use GUI Create function which properly sets up all Model-Job linking
         try:
@@ -146,30 +178,8 @@ class CAMManager:
                 # Rename the job to our desired name
                 job.Label = f"CAM_Job_{sheet_group.Label}"
                 
-                # CAM Model-* objects reference their base objects via Objects property
-                # Keep base objects accessible but hide them from view
-                base_group_name = f"CAM_BaseObjects_{sheet_group.Label}"
-                base_group = self.doc.addObject("App::DocumentObjectGroup", base_group_name)
-                
-                # Hide the base group itself
-                if hasattr(base_group, 'ViewObject') and base_group.ViewObject:
-                    base_group.ViewObject.Visibility = False
-                
-                for cam_obj in all_models:
-                    try:
-                        base_group.addObject(cam_obj)
-                        # Hide each base object
-                        if hasattr(cam_obj, 'ViewObject') and cam_obj.ViewObject:
-                            cam_obj.ViewObject.Visibility = False
-                    except Exception as e:
-                        FreeCAD.Console.PrintWarning(f"Could not organize CAM object {cam_obj.Name}: {e}\\n")
-                
-                # Add the base group under the layout group for organization
-                if self.layout_group:
-                    try:
-                        self.layout_group.addObject(base_group)
-                    except:
-                        pass
+                # Note: CAM_Parts/Labels/Outlines compounds are hidden base objects
+                # that the CAM job references. They cannot be deleted.
                 
                 # Replace the stock with a CreateBox stock matching sheet dimensions
                 if job.Stock:
@@ -177,16 +187,17 @@ class CAMManager:
                     self.doc.removeObject(old_stock.Name)
                 
                 # Create new box stock with sheet dimensions
+                # Position stock at sheet origin, Z positioned to match where parts are
                 new_stock = PathStock.CreateBox(job)
                 new_stock.Length = sheet_width
                 new_stock.Width = sheet_height
                 new_stock.Height = sheet_thickness
                 
-                # Position stock at sheet origin with Z=0 at top of stock
-                # Stock bottom is at Z = -thickness, top at Z = 0 (for CNC milling convention)
+                # Stock positioned with bottom at Z = -sheet_thickness, top at Z = 0
+                # This matches the parts which have their bottom at Z = -sheet_thickness
                 new_stock.Placement = FreeCAD.Placement(
-                    FreeCAD.Vector(0, 0, -sheet_thickness),  # Position: X=0, Y=0, Z=-thickness
-                    FreeCAD.Rotation()  # No rotation
+                    FreeCAD.Vector(0, 0, -sheet_thickness),
+                    FreeCAD.Rotation()
                 )
                 job.Stock = new_stock
                 
