@@ -35,6 +35,19 @@ class NestingJob:
         
         self._init_sandbox()
 
+    @classmethod
+    def from_ga_result(cls, doc, target_layout, params, preparer, layout_group, parts_group, sheets):
+        """Creates a NestingJob from a completed GA layout, bypassing sandbox creation."""
+        job = cls.__new__(cls)
+        job.doc = doc
+        job.target_layout = target_layout
+        job.params = params
+        job.preparer = preparer
+        job.temp_layout = layout_group
+        job.parts_group = parts_group
+        job.sheets = sheets
+        return job
+
     def _init_sandbox(self):
         """Creates the temporary layout and parts bin."""
         self.temp_layout = self.doc.addObject("App::DocumentObjectGroup", "Layout_temp")
@@ -427,14 +440,15 @@ class NestingController:
                             child.ViewObject.Visibility = False
                 
                 best_layout.layout_group.Label = "Layout_temp"
-                self.current_job = NestingJob.__new__(NestingJob)
-                self.current_job.doc = self.doc
-                self.current_job.target_layout = target_layout
-                self.current_job.params = ui_params
-                self.current_job.preparer = self.shape_preparer
-                self.current_job.temp_layout = best_layout.layout_group
-                self.current_job.parts_group = best_layout.parts_group
-                self.current_job.sheets = best_layout.sheets
+                self.current_job = NestingJob.from_ga_result(
+                    doc=self.doc,
+                    target_layout=target_layout,
+                    params=ui_params,
+                    preparer=self.shape_preparer,
+                    layout_group=best_layout.layout_group,
+                    parts_group=best_layout.parts_group,
+                    sheets=best_layout.sheets
+                )
                 
                 msg = f"GA Complete: {best_efficiency:.1f}% efficiency, {len(best_layout.sheets)} sheets"
                 self.ui.status_label.setText(msg)
