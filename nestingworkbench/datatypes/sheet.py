@@ -7,6 +7,7 @@ in the nesting layout.
 
 import FreeCAD
 import Part
+import threading
 
 try:
     from shapely.geometry import Polygon
@@ -37,6 +38,7 @@ class Sheet:
         self.spacing = spacing
         self.parent_group_name = None # Will store the name of the top-level layout group
         self.nfp_cache = {} # Cache for partial NFPs of this sheet: (label, resolution, angle) -> {'polygon': Poly, 'placed_count': int}
+        self.nfp_cache_lock = threading.Lock()
 
     def __repr__(self):
         return f"<Sheet id={self.id}, parts={len(self.parts)}>"

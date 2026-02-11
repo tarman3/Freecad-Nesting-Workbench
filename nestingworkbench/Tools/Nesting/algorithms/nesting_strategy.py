@@ -1,5 +1,6 @@
 
 import math
+import os
 import random
 import copy
 from datetime import datetime
@@ -91,7 +92,12 @@ class PlacementOptimizer:
         prepared_nfp = nfp_entry.get('prepared')
         if not prepared_nfp and not union_poly.is_empty:
              prepared_nfp = prep(union_poly)
-             nfp_entry['prepared'] = prepared_nfp
+             with sheet.nfp_cache_lock:
+                 # Double-check: another thread may have set it
+                 if not nfp_entry.get('prepared'):
+                     nfp_entry['prepared'] = prepared_nfp
+                 else:
+                     prepared_nfp = nfp_entry['prepared']
 
         # 2. Generate Candidates
         rotated_poly = rotate(part.original_polygon, angle, origin='centroid')
@@ -188,6 +194,10 @@ class Nester:
         self.sheets = []
         self.update_callback = None # Can be set externally
 
+        # Background NFP pre-computation
+        self._precompute_pool = ThreadPoolExecutor(max_workers=os.cpu_count())
+        self._precomputed_keys = set()
+
     def log(self, message, level="message"):
         if self.log_callback:
             self.log_callback(message)
@@ -272,7 +282,14 @@ class Nester:
             # Notify end of part placement (for unhighlighting master shapes)
             if not quiet and self.part_end_callback:
                 self.part_end_callback(part, placed)
+            
+            # Submit background NFP pre-computation for remaining parts
+            if placed and i < total_parts - 1:
+                self._submit_precomputation(sheets, current_parts[i+1:])
         
+        # Shut down precompute pool (don't wait for pending futures)
+        self._precompute_pool.shutdown(wait=False)
+        self._precomputed_keys.clear()
         return sheets, unplaced_parts
 
     def _attempt_placement_on_sheet(self, part, sheet):
@@ -286,3 +303,60 @@ class Nester:
             sheet.add_part(new_placed_part)
             return True
         return False
+
+    def _submit_precomputation(self, sheets, remaining_parts):
+        """Submit background NFP computations for remaining parts against all placed parts.
+        
+        While the main thread is placing the current part, background threads
+        compute master NFPs that will be needed for future parts. When those
+        parts are actually placed, their NFPs are already cached.
+        """
+        from ....datatypes.shape import Shape
+        
+        # Collect all placed parts across all sheets
+        placed_parts = []
+        for sheet in sheets:
+            for pp in sheet.parts:
+                placed_parts.append(pp)
+        
+        if not placed_parts:
+            return
+        
+        for remaining in remaining_parts:
+            # Per-part rotation steps
+            rot_steps = getattr(remaining, 'rotation_steps', None)
+            if rot_steps is None or rot_steps < 1:
+                rot_steps = self.optimizer.rotation_steps
+            rot_steps = max(1, rot_steps)
+            angles = [i * (360.0 / rot_steps) for i in range(rot_steps)]
+            
+            for placed in placed_parts:
+                for angle in angles:
+                    relative_angle = (angle - placed.angle) % 360.0
+                    if abs(relative_angle - 360.0) < 1e-5:
+                        relative_angle = 0.0
+                    relative_angle = round(relative_angle, 4)
+                    
+                    cache_key = (
+                        placed.shape.source_freecad_object.Label,
+                        remaining.source_freecad_object.Label,
+                        relative_angle,
+                        remaining.spacing,
+                        remaining.deflection,
+                        remaining.simplification
+                    )
+                    
+                    # Skip if already submitted or cached
+                    if cache_key in self._precomputed_keys:
+                        continue
+                    self._precomputed_keys.add(cache_key)
+                    
+                    with Shape.nfp_cache_lock:
+                        if cache_key in Shape.nfp_cache:
+                            continue
+                    
+                    # Fire-and-forget: compute in background, result goes to cache
+                    self._precompute_pool.submit(
+                        self.engine._calculate_and_cache_nfp,
+                        placed.shape, 0.0, remaining, relative_angle, cache_key
+                    )

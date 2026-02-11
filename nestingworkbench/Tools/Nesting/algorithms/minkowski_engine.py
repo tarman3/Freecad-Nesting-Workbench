@@ -46,20 +46,21 @@ class MinkowskiEngine:
         """
         cache_key = (part_to_place.source_freecad_object.Label, round(angle, 4))
         
-        # Initialize or Retrieve cache entry
-        if cache_key not in sheet.nfp_cache:
-            sheet.nfp_cache[cache_key] = {
-                'polygon': Polygon(), # Start empty
-                'last_part_idx': 0,
-                'points': [],
-                'prepared': None
-            }
+        # Initialize or Retrieve cache entry (protected by sheet lock)
+        with sheet.nfp_cache_lock:
+            if cache_key not in sheet.nfp_cache:
+                sheet.nfp_cache[cache_key] = {
+                    'polygon': Polygon(), # Start empty
+                    'last_part_idx': 0,
+                    'points': [],
+                    'prepared': None
+                }
+                
+            entry = sheet.nfp_cache[cache_key]
             
-        entry = sheet.nfp_cache[cache_key]
-        
-        # If we are up to date, return immediately
-        if entry['last_part_idx'] >= len(sheet.parts):
-            return entry
+            # If we are up to date, return immediately
+            if entry['last_part_idx'] >= len(sheet.parts):
+                return entry
 
         # We have new parts to process
         new_polys = []
@@ -87,7 +88,8 @@ class MinkowskiEngine:
             )
             
             # Get Master NFP
-            nfp_data = Shape.nfp_cache.get(nfp_cache_key)
+            with Shape.nfp_cache_lock:
+                nfp_data = Shape.nfp_cache.get(nfp_cache_key)
             if not nfp_data:
                 # Calculate if missing (synchronous)
                 nfp_data = self._calculate_and_cache_nfp(
@@ -104,40 +106,34 @@ class MinkowskiEngine:
                 translated = translate(rotated, xoff=cent.x, yoff=cent.y)
                 new_polys.append(translated)
         
-        # Update Union
-        if new_polys:
-            # Union all new usage areas
-            batch_union = unary_union(new_polys)
-            
-            # Union with existing total
-            if entry['polygon'].is_empty:
-                entry['polygon'] = batch_union
-            else:
-                entry['polygon'] = entry['polygon'].union(batch_union)
+        # Update entry (protected by sheet lock)
+        with sheet.nfp_cache_lock:
+            if new_polys:
+                # Union all new usage areas
+                batch_union = unary_union(new_polys)
                 
-            # Update derived data
-            # Discretize the *Resulting Union* for clean candidate generation
-            # This is much fewer points than discretizing every part!
-            points = []
-            if not entry['polygon'].is_empty:
-                polys = [entry['polygon']] if entry['polygon'].geom_type == 'Polygon' else entry['polygon'].geoms
-                for poly in polys:
-                     # Exterior
-                     points.extend(self._discretize_edge(poly.exterior))
-                     # Holes
-                     for interior in poly.interiors:
-                         points.extend(self._discretize_edge(interior))
+                # Union with existing total
+                if entry['polygon'].is_empty:
+                    entry['polygon'] = batch_union
+                else:
+                    entry['polygon'] = entry['polygon'].union(batch_union)
+                    
+                # Update derived data
+                # Discretize the *Resulting Union* for clean candidate generation
+                points = []
+                if not entry['polygon'].is_empty:
+                    polys = [entry['polygon']] if entry['polygon'].geom_type == 'Polygon' else entry['polygon'].geoms
+                    for poly in polys:
+                         # Exterior
+                         points.extend(self._discretize_edge(poly.exterior))
+                         # Holes
+                         for interior in poly.interiors:
+                             points.extend(self._discretize_edge(interior))
+                
+                entry['points'] = points
+                entry['prepared'] = None # Invalidate prepared cache as polygon changed
             
-            entry['points'] = points
-            entry['prepared'] = None # Invalidate prepared cache as polygon changed
-            
-            # Re-prepare for fast checking
-            # entry['prepared'] = prep(entry['polygon']) # 'prep' not imported? 
-            # We will prep in base_nester or import it here. 
-            # Ideally we return raw poly and let base_nester prep. 
-            # But user asked for caching on sheet. We can cache the raw poly.
-        
-        entry['last_part_idx'] = len(sheet.parts)
+            entry['last_part_idx'] = len(sheet.parts)
         return entry
 
 
