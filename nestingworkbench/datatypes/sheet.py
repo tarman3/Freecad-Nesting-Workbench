@@ -185,7 +185,7 @@ class Sheet:
                 for child in list(sheet_group.Group):
                     try:
                         doc.removeObject(child.Name)
-                    except:
+                    except Exception:
                         pass
 
             shapes_group_name = f"Shapes_{self.id+1}"

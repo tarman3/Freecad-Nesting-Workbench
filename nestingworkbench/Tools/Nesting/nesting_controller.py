@@ -185,7 +185,7 @@ class NestingJob:
         try:
             if self.target_layout and obj.Name == self.target_layout.Name: return
             _ = obj.Name # Check validity
-        except: return
+        except Exception: return
         
         if hasattr(obj, "Group"):
              # Defensive copy of children list
@@ -194,7 +194,7 @@ class NestingJob:
                  self._recursive_delete(c)
         try:
             self.doc.removeObject(obj.Name)
-        except: pass
+        except Exception: pass
 
     def _apply_placement(self, sheets, parts_to_nest):
         original_parts_map = {part.id: part for part in parts_to_nest}
@@ -275,27 +275,7 @@ class NestingController:
         self._execute_ga_nesting(target_layout, ui_params, quantities, master_map, 
                                  rotation_params, algo_kwargs, is_simulating)
     
-    def _execute_standard_nesting(self, target_layout, ui_params, quantities, master_map, 
-                                   rotation_params, algo_kwargs, is_simulating):
-        """Standard single-layout nesting."""
-        # Create Job
-        self.current_job = NestingJob(self.doc, target_layout, ui_params, self.shape_preparer)
-        
-        try:
-            self.ui.status_label.setText("Running nesting...")
-            QtGui.QApplication.processEvents()
-            
-            num_sheets, num_parts = self.current_job.run(quantities, master_map, rotation_params, algo_kwargs, is_simulating)
-            
-            msg = f"Placed {num_parts} parts on {num_sheets} sheets."
-            self.ui.status_label.setText(msg)
-            FreeCAD.Console.PrintMessage(f"{msg}\n--- NESTING DONE ---\n")
-            if self.ui.sound_checkbox.isChecked(): QtGui.QApplication.beep()
-                 
-        except Exception as e:
-            FreeCAD.Console.PrintError(f"Nesting Error: {e}\n")
-            self.ui.status_label.setText(f"Error: {e}")
-            self.cancel_job()
+
     
     def _execute_ga_nesting(self, target_layout, ui_params, quantities, master_map, 
                             rotation_params, algo_kwargs, is_simulating):
@@ -529,7 +509,7 @@ class NestingController:
                             # Hide MasterShapes
                             if child.Label.startswith("MasterShapes") and hasattr(child, "ViewObject"):
                                 child.ViewObject.Visibility = False
-                except: pass
+                except Exception: pass
             
             self.current_job = None
             FreeCAD.Console.PrintMessage("Job Cancelled.\n")
@@ -583,7 +563,7 @@ class NestingController:
         if target:
             try:
                 if target not in self.doc.Objects: target = None
-            except: target = None
+            except Exception: target = None
             
         # Infer from selection
         if not target and hasattr(self.ui, 'selected_shapes_to_process') and self.ui.selected_shapes_to_process:
@@ -684,7 +664,7 @@ class NestingController:
                 
                 # Store rotation params (value AND override flag) for persistence
                 rotation_params[label] = (rot_val, override)
-            except: continue
+            except Exception: continue
             
         # Map objects
         for obj in self.ui.selected_shapes_to_process:
@@ -692,7 +672,7 @@ class NestingController:
                  lbl = obj.Label.replace("master_shape_", "")
                  if lbl in quantities:
                      master_map[obj.Label] = obj
-             except: pass
+             except Exception: pass
              
         return ui_settings, quantities, master_map, rotation_params
 
