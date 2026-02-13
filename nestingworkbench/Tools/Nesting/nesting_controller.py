@@ -447,10 +447,20 @@ class NestingController:
         """Loads a selection of shapes into the UI."""
         self.ui.nest_button.setEnabled(True)
         
+        # Dictionary to store counts from selection
+        selection_counts = {}
+
         # Extract individual parts from assemblies/groups
         if not is_reloading_layout:
             extracted = self._extract_parts_from_selection(selection)
             if extracted:
+                # Count occurrences before deduping
+                for obj in extracted:
+                    if obj in selection_counts:
+                        selection_counts[obj] += 1
+                    else:
+                        selection_counts[obj] = 1
+                
                 selection = extracted
                 FreeCAD.Console.PrintMessage(f"  -> Extracted {len(selection)} parts from selection.\n")
         
@@ -468,7 +478,10 @@ class NestingController:
             if display_label.startswith("master_shape_"):
                 display_label = display_label.replace("master_shape_", "")
             
-            qty = 1
+            # Default to 1, or use selection count if available
+            qty = selection_counts.get(obj, 1)
+            
+            # Allow initial_quantities to override (e.g. from saved layout)
             if initial_quantities and obj.Label in initial_quantities:
                 qty = initial_quantities[obj.Label]
                 
@@ -507,18 +520,33 @@ class NestingController:
             self.ui.status_label.setText("Select shapes in the 3D view or tree to add them.")
             return
 
+        # Handle assemblies in selection
+        extracted = self._extract_parts_from_selection(selection)
+        selection_counts = {}
+        if extracted:
+            for obj in extracted:
+                selection_counts[obj] = selection_counts.get(obj, 0) + 1
+            selection = extracted
+
         existing_labels = [self.ui.shape_table.item(row, 0).text() for row in range(self.ui.shape_table.rowCount())]
         
         added_count = 0
-        for obj in selection:
+        
+        # Process unique objects from selection
+        unique_selection = list(dict.fromkeys(selection))
+        
+        for obj in unique_selection:
             if obj.Label not in existing_labels:
                 row_position = self.ui.shape_table.rowCount()
                 self.ui.shape_table.insertRow(row_position)
                 
+                # Determine quantity from selection count
+                qty = selection_counts.get(obj, 1)
+                
                 if hasattr(self.ui, 'add_part_row'):
-                    self.ui.add_part_row(row_position, obj.Label)
+                    self.ui.add_part_row(row_position, obj.Label, quantity=qty)
                 elif hasattr(self.ui, '_add_part_row'):
-                    self.ui._add_part_row(row_position, obj.Label)
+                    self.ui._add_part_row(row_position, obj.Label, quantity=qty)
                     
                 self.ui.selected_shapes_to_process.append(obj)
                 added_count += 1
