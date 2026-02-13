@@ -297,29 +297,11 @@ class ShapePreparer:
         if not hasattr(master_shape_obj, "BoundaryObject"):
             master_shape_obj.addProperty("App::PropertyLink", "BoundaryObject", "Nesting", "")
         
-        # Get shape geometry and center it at (0,0,0) in a SINGLE transformGeometry call.
-        # We combine the Placement baking (world coordinates) and centering into one matrix.
+        # Get shape geometry and center it at (0,0,0).
         # This keeps Placement.Base at (0,0,0) which avoids App::Part container corruption.
         original_shape = master_obj.Shape.copy()
+        is_2d_object = master_obj.isDerivedFrom("Part::Part2DObject")
         FreeCAD.Console.PrintMessage(f"  -> Creating master for '{label}' (type: {master_obj.TypeId}) with up_direction='{up_direction}'\n")
-        
-        # For Draft/2D objects, convert parametric shapes (circles, arcs) to polygon faces.
-        # OCCT parametric curves (Geom_Circle etc.) don't transform reliably via
-        # transformGeometry, but explicit polygon vertices always do.
-        if master_obj.isDerivedFrom("Part::Part2DObject"):
-            try:
-                new_wires = []
-                for wire in original_shape.Wires:
-                    pts = wire.discretize(Number=72)
-                    if len(pts) > 2:
-                        if pts[0] != pts[-1]:
-                            pts.append(pts[0])
-                        new_wires.append(Part.makePolygon(pts))
-                if new_wires:
-                    original_shape = Part.Face(new_wires[0])
-                    FreeCAD.Console.PrintMessage(f"     Converted 2D shape to polygon face ({len(new_wires[0].Vertexes)} vertices)\n")
-            except Exception as e:
-                FreeCAD.Console.PrintWarning(f"     Could not convert 2D shape to polygon: {e}\n")
         
         # Use source_centroid (which includes buffering offset) to match polygon centering.
         if temp_shape_wrapper.source_centroid:
@@ -332,12 +314,68 @@ class ShapePreparer:
                 (actual_bb.ZMin + actual_bb.ZMax) / 2
             )
         
-        # Build combined matrix: first apply Placement (bake world coords), then center
-        combined_mat = FreeCAD.Matrix()
-        combined_mat.move(center_point.negative())
-        if master_obj.Placement and not master_obj.Placement.isIdentity():
-            combined_mat = combined_mat.multiply(master_obj.Placement.Matrix)
-        original_shape = original_shape.transformGeometry(combined_mat)
+        if is_2d_object:
+            # For Draft/2D objects, rebuild shape by transforming each edge's curve parameters.
+            # OCCT parametric curves (Geom_Circle) don't transform via transformGeometry,
+            # so we reconstruct them at the correct position preserving smooth curves.
+            plc = master_obj.Placement
+            offset = FreeCAD.Vector(center_point.x, center_point.y, center_point.z)
+            try:
+                new_edges = []
+                for edge in original_shape.Edges:
+                    curve = edge.Curve
+                    if hasattr(curve, 'Radius') and hasattr(curve, 'Center'):
+                        # Circle or Arc: transform center, preserve radius and smoothness
+                        world_center = plc.multVec(curve.Center)
+                        new_center = world_center - offset
+                        new_axis = plc.Rotation.multVec(curve.Axis)
+                        if edge.isClosed():
+                            new_edges.append(Part.makeCircle(curve.Radius, new_center, new_axis))
+                        else:
+                            c = Part.Circle(new_center, new_axis, curve.Radius)
+                            new_edges.append(c.toShape(edge.FirstParameter, edge.LastParameter))
+                    elif len(edge.Vertexes) >= 2:
+                        # Line: transform endpoints
+                        p1 = plc.multVec(edge.Vertexes[0].Point) - offset
+                        p2 = plc.multVec(edge.Vertexes[1].Point) - offset
+                        new_edges.append(Part.makeLine(p1, p2))
+                    else:
+                        # Fallback: discretize unknown curve types
+                        pts = edge.discretize(Number=72)
+                        transformed = [plc.multVec(p) - offset for p in pts]
+                        for i in range(len(transformed) - 1):
+                            new_edges.append(Part.makeLine(transformed[i], transformed[i + 1]))
+                
+                if new_edges:
+                    wire = Part.Wire(new_edges)
+                    try:
+                        original_shape = Part.Face(wire)
+                    except Exception:
+                        original_shape = Part.Compound([wire])
+                    FreeCAD.Console.PrintMessage(f"     Rebuilt 2D shape with smooth curves\n")
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"     Could not rebuild 2D shape: {e}, using fallback\n")
+                # Fallback: discretize to polygon
+                new_wires = []
+                for wire in master_obj.Shape.Wires:
+                    pts = wire.discretize(Number=72)
+                    if len(pts) > 2:
+                        transformed = [plc.multVec(p) - offset for p in pts]
+                        if transformed[0] != transformed[-1]:
+                            transformed.append(transformed[0])
+                        new_wires.append(Part.makePolygon(transformed))
+                if new_wires:
+                    try:
+                        original_shape = Part.Face(new_wires[0])
+                    except Exception:
+                        original_shape = Part.Compound(new_wires)
+        else:
+            # Regular Part objects: use combined transformGeometry (Placement + centering)
+            combined_mat = FreeCAD.Matrix()
+            combined_mat.move(center_point.negative())
+            if master_obj.Placement and not master_obj.Placement.isIdentity():
+                combined_mat = combined_mat.multiply(master_obj.Placement.Matrix)
+            original_shape = original_shape.transformGeometry(combined_mat)
         
         master_shape_obj.Shape = original_shape
         
