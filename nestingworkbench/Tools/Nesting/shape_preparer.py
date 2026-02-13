@@ -297,38 +297,94 @@ class ShapePreparer:
         if not hasattr(master_shape_obj, "BoundaryObject"):
             master_shape_obj.addProperty("App::PropertyLink", "BoundaryObject", "Nesting", "")
         
-        # Get shape in world coordinates (apply source object's placement)
+        # Get shape geometry and center it at (0,0,0).
+        # This keeps Placement.Base at (0,0,0) which avoids App::Part container corruption.
         original_shape = master_obj.Shape.copy()
-        if master_obj.Placement and not master_obj.Placement.isIdentity():
-            original_shape.transformShape(master_obj.Placement.Matrix)
-        FreeCAD.Console.PrintMessage(f"  -> Creating master for '{label}' with up_direction='{up_direction}'\n")
+        is_2d_object = master_obj.isDerivedFrom("Part::Part2DObject")
+        FreeCAD.Console.PrintMessage(f"  -> Creating master for '{label}' (type: {master_obj.TypeId}) with up_direction='{up_direction}'\n")
+        
+        # Use source_centroid (which includes buffering offset) to match polygon centering.
+        if temp_shape_wrapper.source_centroid:
+            center_point = temp_shape_wrapper.source_centroid
+        else:
+            actual_bb = original_shape.BoundBox
+            center_point = FreeCAD.Vector(
+                (actual_bb.XMin + actual_bb.XMax) / 2,
+                (actual_bb.YMin + actual_bb.YMax) / 2,
+                (actual_bb.ZMin + actual_bb.ZMax) / 2
+            )
+        
+        if is_2d_object:
+            # For Draft/2D objects, rebuild shape by transforming each edge's curve parameters.
+            # OCCT parametric curves (Geom_Circle) don't transform via transformGeometry,
+            # so we reconstruct them at the correct position preserving smooth curves.
+            plc = master_obj.Placement
+            offset = FreeCAD.Vector(center_point.x, center_point.y, center_point.z)
+            try:
+                new_edges = []
+                for edge in original_shape.Edges:
+                    curve = edge.Curve
+                    if hasattr(curve, 'Radius') and hasattr(curve, 'Center'):
+                        # Circle or Arc: transform center, preserve radius and smoothness
+                        world_center = plc.multVec(curve.Center)
+                        new_center = world_center - offset
+                        new_axis = plc.Rotation.multVec(curve.Axis)
+                        if edge.isClosed():
+                            new_edges.append(Part.makeCircle(curve.Radius, new_center, new_axis))
+                        else:
+                            c = Part.Circle(new_center, new_axis, curve.Radius)
+                            new_edges.append(c.toShape(edge.FirstParameter, edge.LastParameter))
+                    elif len(edge.Vertexes) >= 2:
+                        # Line: transform endpoints
+                        p1 = plc.multVec(edge.Vertexes[0].Point) - offset
+                        p2 = plc.multVec(edge.Vertexes[1].Point) - offset
+                        new_edges.append(Part.makeLine(p1, p2))
+                    else:
+                        # Fallback: discretize unknown curve types
+                        pts = edge.discretize(Number=72)
+                        transformed = [plc.multVec(p) - offset for p in pts]
+                        for i in range(len(transformed) - 1):
+                            new_edges.append(Part.makeLine(transformed[i], transformed[i + 1]))
+                
+                if new_edges:
+                    wire = Part.Wire(new_edges)
+                    try:
+                        original_shape = Part.Face(wire)
+                    except Exception:
+                        original_shape = Part.Compound([wire])
+                    FreeCAD.Console.PrintMessage(f"     Rebuilt 2D shape with smooth curves\n")
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"     Could not rebuild 2D shape: {e}, using fallback\n")
+                # Fallback: discretize to polygon
+                new_wires = []
+                for wire in master_obj.Shape.Wires:
+                    pts = wire.discretize(Number=72)
+                    if len(pts) > 2:
+                        transformed = [plc.multVec(p) - offset for p in pts]
+                        if transformed[0] != transformed[-1]:
+                            transformed.append(transformed[0])
+                        new_wires.append(Part.makePolygon(transformed))
+                if new_wires:
+                    try:
+                        original_shape = Part.Face(new_wires[0])
+                    except Exception:
+                        original_shape = Part.Compound(new_wires)
+        else:
+            # Regular Part objects: use combined transformGeometry (Placement + centering)
+            combined_mat = FreeCAD.Matrix()
+            combined_mat.move(center_point.negative())
+            if master_obj.Placement and not master_obj.Placement.isIdentity():
+                combined_mat = combined_mat.multiply(master_obj.Placement.Matrix)
+            original_shape = original_shape.transformGeometry(combined_mat)
         
         master_shape_obj.Shape = original_shape
         
-        # Use source_centroid from shape_processor for consistent centering
-        # This is the world-space BB center (after rotation if applicable)
-        if temp_shape_wrapper.source_centroid:
-            offset = temp_shape_wrapper.source_centroid.negative()
-        else:
-            bb = original_shape.BoundBox
-            offset = FreeCAD.Vector(
-                -(bb.XMin + bb.XMax) / 2,
-                -(bb.YMin + bb.YMax) / 2,
-                -(bb.ZMin + bb.ZMax) / 2
-            )
-            
-        FreeCAD.Console.PrintMessage(f"     Using offset: ({-offset.x:.2f}, {-offset.y:.2f})\n")
+        FreeCAD.Console.PrintMessage(f"     Centered from ({center_point.x:.2f}, {center_point.y:.2f}) to origin\n")
         
-        # Get up_direction rotation
+        # Get up_direction rotation (Placement has NO translation — only rotation)
         up_rotation = get_up_direction_rotation(up_direction)
+        master_shape_obj.Placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), up_rotation)
         
-        # Compose placement: first translate to origin, then rotate around origin
-        translate_to_origin = FreeCAD.Placement(offset, FreeCAD.Rotation())
-        rotate_at_origin = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), up_rotation)
-        final_placement = rotate_at_origin.multiply(translate_to_origin)
-        
-        master_shape_obj.Placement = final_placement
-            
         if hasattr(master_shape_obj, "ViewObject"):
             master_shape_obj.ViewObject.Visibility = True
         master_container.addObject(master_shape_obj)
@@ -434,10 +490,8 @@ class ShapePreparer:
 
                 part_copy = self.doc.addObject("Part::Feature", f"part_{shape_instance.id}")
                 
-                # Copy shape from master (raw geometry)
+                # Copy shape and placement from master
                 part_copy.Shape = master_shape_obj.Shape.copy()
-                
-                # Copy the master's placement (which includes translate+rotate for centering and up_direction)
                 part_copy.Placement = master_shape_obj.Placement
                 
                 # Debug: Check what geometry we're getting
