@@ -73,6 +73,36 @@ def get_2d_profile_from_obj(obj, up_direction="Z+", tessellation_quality=0.1, si
         
         raise ValueError(f"Sketch '{obj.Label}' contains no usable wires.")
 
+    # Special case for Draft/2D objects - use wire discretization directly
+    # Draft Wire, Draft Rectangle, etc. are Part::Part2DObject derivatives.
+    # Their shapes may lack solid faces, causing tessellate() to produce no triangles
+    # and falling back to convex hull (losing concavity).
+    if obj.isDerivedFrom("Part::Part2DObject") and not needs_rotation:
+        if shape.Wires:
+            try:
+                from shapely.geometry import Polygon as ShapelyPolygon
+                # Use the longest wire as outer boundary
+                wires = sorted(shape.Wires, key=lambda w: w.Length, reverse=True)
+                outer_pts = [(v.x, v.y) for v in wires[0].discretize(Deflection=tessellation_quality)]
+                if len(outer_pts) > 2:
+                    if outer_pts[0] != outer_pts[-1]:
+                        outer_pts.append(outer_pts[0])
+                    # Handle holes (inner wires)
+                    holes = []
+                    for w in wires[1:]:
+                        h_pts = [(v.x, v.y) for v in w.discretize(Deflection=tessellation_quality)]
+                        if len(h_pts) > 2:
+                            if h_pts[0] != h_pts[-1]:
+                                h_pts.append(h_pts[0])
+                            holes.append(h_pts)
+                    poly = ShapelyPolygon(outer_pts, holes)
+                    if simplification > 0:
+                        poly = poly.simplify(simplification, preserve_topology=True)
+                    FreeCAD.Console.PrintMessage(f"  -> Used wire discretization for 2D object '{obj.Label}'\n")
+                    return poly
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"Could not convert 2D object '{obj.Label}' via wire discretization: {e}. Falling back to mesh.\n")
+
     # Convert shape to mesh and project all mesh vertices onto XY plane
     try:
         FreeCAD.Console.PrintMessage(f"  -> Meshing shape for '{obj.Label}'\n")
@@ -317,3 +347,8 @@ def create_single_nesting_part(shape_to_populate, shape_obj, spacing, deflection
     shape_to_populate.simplification = float(simplification)
     shape_to_populate.unbuffered_polygon = final_unbuffered_polygon
     shape_to_populate.source_centroid = source_centroid + rotated_offset
+    
+    FreeCAD.Console.PrintMessage(f"  -> source_centroid: ({shape_to_populate.source_centroid.x:.2f}, {shape_to_populate.source_centroid.y:.2f}, {shape_to_populate.source_centroid.z:.2f})\n")
+    if abs(offset_from_origin.x) > 0.01 or abs(offset_from_origin.y) > 0.01:
+        FreeCAD.Console.PrintMessage(f"  -> Buffering centroid offset: ({offset_from_origin.x:.3f}, {offset_from_origin.y:.3f})\n")
+

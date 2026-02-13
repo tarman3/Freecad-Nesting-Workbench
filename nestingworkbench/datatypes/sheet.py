@@ -283,6 +283,24 @@ class Sheet:
 
                     # Apply the final nesting placement to the CONTAINER.
                     container.Placement = final_placement
+                    
+                    # Debug: Log positions to diagnose bounds-to-shape offset
+                    shape_bb = shape_obj.Shape.BoundBox
+                    shape_visual_center = FreeCAD.Vector(
+                        shape_obj.Placement.Base.x + (shape_bb.XMin + shape_bb.XMax) / 2,
+                        shape_obj.Placement.Base.y + (shape_bb.YMin + shape_bb.YMax) / 2,
+                        0
+                    )
+                    bound_center_str = "N/A"
+                    if boundary_obj:
+                        bbb = boundary_obj.Shape.BoundBox
+                        bound_center_str = f"({(bbb.XMin + bbb.XMax)/2:.2f}, {(bbb.YMin + bbb.YMax)/2:.2f})"
+                    FreeCAD.Console.PrintMessage(
+                        f"  DRAW {shape.id}: shape_visual=({shape_visual_center.x:.2f}, {shape_visual_center.y:.2f})"
+                        f" bounds_center={bound_center_str}"
+                        f" shape_plc=({shape_obj.Placement.Base.x:.2f}, {shape_obj.Placement.Base.y:.2f})"
+                        f" container_plc=({final_placement.Base.x:.2f}, {final_placement.Base.y:.2f})\n"
+                    )
 
                     # --- Handle the label object AFTER the container is placed ---
                     if ui_params.get('add_labels', False) and Draft and ui_params.get('font_path') and hasattr(shape, 'label_text') and shape.label_text:

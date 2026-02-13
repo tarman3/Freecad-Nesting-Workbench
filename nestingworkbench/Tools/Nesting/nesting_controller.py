@@ -83,6 +83,11 @@ class NestingJob:
             **algo_kwargs
         )
         
+        # Warn about unplaced parts
+        if unplaced:
+            unplaced_ids = [p.id for p in unplaced]
+            FreeCAD.Console.PrintWarning(f"WARNING: {len(unplaced)} part(s) could not be placed: {unplaced_ids}\n")
+        
         if not is_simulating:
             self._apply_placement(self.sheets, parts_to_nest)
             
@@ -612,6 +617,7 @@ class NestingController:
                     total_nesting_time += elapsed
                     
                     layout.sheets = sheets
+                    layout.unplaced = unplaced  # Track unplaced parts
                     
                     # Calculate efficiency
                     fitness, efficiency = layout_manager.calculate_efficiency(
@@ -621,6 +627,8 @@ class NestingController:
                     # Penalize unplaced parts
                     if unplaced:
                         layout.fitness += len(unplaced) * ui_params['sheet_width'] * ui_params['sheet_height'] * 10
+                        unplaced_ids = [p.id for p in unplaced]
+                        FreeCAD.Console.PrintWarning(f"    -> WARNING: {len(unplaced)} part(s) could not be placed: {unplaced_ids}\n")
                     
                     FreeCAD.Console.PrintMessage(f"    -> Efficiency: {efficiency:.1f}%\n")
                     
@@ -715,9 +723,16 @@ class NestingController:
                 
                 # Print final summary at the very end of the report
                 c_score = f", Contact: {best_layout.contact_score:.1f}" if hasattr(best_layout, 'contact_score') else ""
-                msg = f"GA Complete: {best_efficiency:.1f}% efficiency, {len(best_layout.sheets)} sheets{c_score}, Time: {total_nesting_time:.2f}s"
+                unplaced_count = len(getattr(best_layout, 'unplaced', []) or [])
+                placed_count = sum(len(s) for s in best_layout.sheets)
+                unplaced_msg = f", {unplaced_count} UNPLACED" if unplaced_count > 0 else ""
+                msg = f"GA Complete: {best_efficiency:.1f}% efficiency, {len(best_layout.sheets)} sheets, {placed_count} placed{unplaced_msg}{c_score}, Time: {total_nesting_time:.2f}s"
                 self.ui.status_label.setText(msg)
-                FreeCAD.Console.PrintMessage(f"{msg}\n--- NESTING DONE ---\n")
+                FreeCAD.Console.PrintMessage(f"{msg}\n")
+                if unplaced_count > 0:
+                    unplaced_ids = [p.id for p in best_layout.unplaced]
+                    FreeCAD.Console.PrintWarning(f"WARNING: {unplaced_count} part(s) could not be placed: {unplaced_ids}\n")
+                FreeCAD.Console.PrintMessage(f"--- NESTING DONE ---\n")
                 if self.ui.sound_checkbox.isChecked(): QtGui.QApplication.beep()
             
             self.doc.recompute()

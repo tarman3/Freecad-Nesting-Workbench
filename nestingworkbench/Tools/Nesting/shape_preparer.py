@@ -297,38 +297,42 @@ class ShapePreparer:
         if not hasattr(master_shape_obj, "BoundaryObject"):
             master_shape_obj.addProperty("App::PropertyLink", "BoundaryObject", "Nesting", "")
         
-        # Get shape in world coordinates (apply source object's placement)
+        # Get shape geometry for the master.
+        # For Draft/2D objects (Part::Part2DObject), we use the local geometry directly
+        # WITHOUT calling transformShape (which causes BRep coordinate corruption for 2D types).
+        # For regular Part objects, we bake the Placement into the geometry as usual.
+        is_2d_object = master_obj.isDerivedFrom("Part::Part2DObject")
         original_shape = master_obj.Shape.copy()
-        if master_obj.Placement and not master_obj.Placement.isIdentity():
-            original_shape.transformShape(master_obj.Placement.Matrix)
-        FreeCAD.Console.PrintMessage(f"  -> Creating master for '{label}' with up_direction='{up_direction}'\n")
+        if not is_2d_object:
+            if master_obj.Placement and not master_obj.Placement.isIdentity():
+                original_shape.transformShape(master_obj.Placement.Matrix)
+        FreeCAD.Console.PrintMessage(f"  -> Creating master for '{label}' (type: {master_obj.TypeId}) with up_direction='{up_direction}'")
+        if is_2d_object:
+            FreeCAD.Console.PrintMessage(f" [2D: using local geometry]\n")
+        else:
+            FreeCAD.Console.PrintMessage(f"\n")
+        
+        # CRITICAL: Physically translate the shape geometry so its center is at (0,0,0).
+        # We use shape.translate() instead of a Placement offset because App::Part containers
+        # corrupt non-zero Placement.Base values (they get applied to the Shape coordinates).
+        # By centering the geometry itself, Placement.Base stays at (0,0,0) which is immune
+        # to this corruption.
+        actual_bb = original_shape.BoundBox
+        geo_center = FreeCAD.Vector(
+            (actual_bb.XMin + actual_bb.XMax) / 2,
+            (actual_bb.YMin + actual_bb.YMax) / 2,
+            (actual_bb.ZMin + actual_bb.ZMax) / 2
+        )
+        original_shape.translate(geo_center.negative())
         
         master_shape_obj.Shape = original_shape
         
-        # Use source_centroid from shape_processor for consistent centering
-        # This is the world-space BB center (after rotation if applicable)
-        if temp_shape_wrapper.source_centroid:
-            offset = temp_shape_wrapper.source_centroid.negative()
-        else:
-            bb = original_shape.BoundBox
-            offset = FreeCAD.Vector(
-                -(bb.XMin + bb.XMax) / 2,
-                -(bb.YMin + bb.YMax) / 2,
-                -(bb.ZMin + bb.ZMax) / 2
-            )
-            
-        FreeCAD.Console.PrintMessage(f"     Using offset: ({-offset.x:.2f}, {-offset.y:.2f})\n")
+        FreeCAD.Console.PrintMessage(f"     Centered from ({geo_center.x:.2f}, {geo_center.y:.2f}) to origin\n")
         
-        # Get up_direction rotation
+        # Get up_direction rotation (Placement has NO translation — only rotation)
         up_rotation = get_up_direction_rotation(up_direction)
+        master_shape_obj.Placement = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), up_rotation)
         
-        # Compose placement: first translate to origin, then rotate around origin
-        translate_to_origin = FreeCAD.Placement(offset, FreeCAD.Rotation())
-        rotate_at_origin = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), up_rotation)
-        final_placement = rotate_at_origin.multiply(translate_to_origin)
-        
-        master_shape_obj.Placement = final_placement
-            
         if hasattr(master_shape_obj, "ViewObject"):
             master_shape_obj.ViewObject.Visibility = True
         master_container.addObject(master_shape_obj)
@@ -434,10 +438,8 @@ class ShapePreparer:
 
                 part_copy = self.doc.addObject("Part::Feature", f"part_{shape_instance.id}")
                 
-                # Copy shape from master (raw geometry)
+                # Copy shape and placement from master
                 part_copy.Shape = master_shape_obj.Shape.copy()
-                
-                # Copy the master's placement (which includes translate+rotate for centering and up_direction)
                 part_copy.Placement = master_shape_obj.Placement
                 
                 # Debug: Check what geometry we're getting
